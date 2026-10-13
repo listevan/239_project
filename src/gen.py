@@ -1,0 +1,430 @@
+#!/usr/bin/env python
+"""Sample one model under one or more tool conditions with vLLM and write JSONL.
+
+Conditions
+  prompt_off   shared plain CoT prompt, one pass, nothing executed. Code the model
+               writes anyway is logged (code_emitted) and so are fabricated
+               ```output blocks (fake_outputs).
+  env_denied   the model's own tool prompt, the tool loop runs, but every call
+               returns the AdaTIR denial message instead of executing.
+  tool_on      the model's own tool prompt, code is executed with `python -I`
+               in a temp dir (NOT a sandbox: fine for Colab, not for a shared box).
+
+Only `main()` imports vllm, so the helpers can be unit-tested on a laptop.
+
+Example
+  python gen.py --model GAIR/ToRL-1.5B --tag tool_rl \
+      --conditions prompt_off,env_denied,tool_on --native-template torl \
+      --dataset math500 --n-problems 100 --n 16 --max-tokens 3000 \
+      --max-model-len 4096 --out results/math-1.5b
+"""
+import argparse
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import arith_check  # noqa: E402
+
+# --------------------------------------------------------------------------- prompts
+# Verified against the sources on 2026-10-13:
+#   qwen_math_cot  Oat-Zero model card (sail/Qwen2.5-Math-*-Oat-Zero), also the
+#                  Qwen2.5-Math CoT prompt. Shared tool-off prompt for every model.
+#   qwen_math_tir  Qwen2.5-Math TIR prompt (same words ToRL uses).
+#   torl           ToRL paper Fig. 3, verbatim, raw User/Assistant format.
+#   cir            CIR paper (2505.24480) Fig. 5 text, verbatim. The paper does not
+#                  say whether it sits in the system or user turn; system assumed.
+TEMPLATES = {
+    "qwen_math_cot": (
+        "<|im_start|>system\nPlease reason step by step, and put your final answer "
+        "within \\boxed{}.<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "qwen_math_tir": (
+        "<|im_start|>system\nPlease integrate natural language reasoning with programs to "
+        "solve the problem above, and put your final answer within \\boxed{}.<|im_end|>\n"
+        "<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "torl": (
+        "A conversation between User and Assistant. The user asks a question, and the "
+        "Assistant solves it.\nUser: Please integrate natural language reasoning with "
+        "programs to solve the problem above, and put your final answer within \\boxed{}.\n"
+        "{q}\nAssistant:"
+    ),
+    "cir": (
+        "<|im_start|>system\nPlease solve the following problem step by step. During your "
+        "reasoning process, if needed, you can choose to write python code to enhance your "
+        "reasoning. The code executor will run your code and provide the execution results "
+        "back to you to support your reasoning process. Please put the final answer within "
+        "\\boxed{}.<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
+}
+
+DENIAL = ("Tool call budget exceeded; the code was not executed. "
+          "Please continue reasoning and give the final answer.")
+
+STOP_FENCE = "```\n"       # end of any fenced block
+STOP_OUTPUT = "```output"  # model opens the output block itself
+TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
+
+CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
+FENCED_RE = re.compile(r"```.*?```", re.S)
+CONDITIONS = ("prompt_off", "env_denied", "tool_on")
+
+
+def build_prompt(template: str, question: str) -> str:
+    return TEMPLATES[template].replace("{q}", question)
+
+
+def last_code_block(text: str):
+    """Last closed ```python block in `text`, or None."""
+    blocks = CODE_RE.findall(text)
+    return blocks[-1] if blocks else None
+
+
+def last_boxed(text: str):
+    """Content of the last \\boxed{...} with balanced braces, or None."""
+    i = text.rfind("\\boxed")
+    if i < 0:
+        return None
+    j = text.find("{", i)
+    if j < 0:
+        return None
+    depth = 0
+    for k in range(j, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[j + 1:k]
+    return None
+
+
+def strip_fenced(text: str) -> str:
+    return FENCED_RE.sub(" ", text)
+
+
+# --------------------------------------------------------------------------- grading
+def make_grader():
+    try:
+        from math_verify import parse, verify  # type: ignore
+
+        def grade(response: str, gold: str) -> bool:
+            try:
+                g = parse(gold if "\\boxed" in gold else f"${gold}$")
+                p = parse(response)
+                return bool(verify(g, p))
+            except Exception:
+                return False
+        return grade, "math_verify"
+    except ImportError:
+        def norm(s):
+            return re.sub(r"\s+|\\left|\\right|\\!|\\,|\$", "", s or "").replace("dfrac", "frac")
+
+        def grade(response: str, gold: str) -> bool:
+            b = last_boxed(response)
+            return b is not None and norm(b) == norm(last_boxed(gold) or gold)
+        return grade, "string"
+
+
+# --------------------------------------------------------------------------- data
+def load_problems(name: str, n_problems: int, seed: int):
+    from datasets import load_dataset  # type: ignore
+    if name == "math500":
+        ds = load_dataset("HuggingFaceH4/MATH-500", split="test")
+        items = [dict(id=r["unique_id"], problem=r["problem"], answer=r["answer"],
+                      subject=r["subject"], level=str(r["level"])) for r in ds]
+    elif name == "aime24":
+        ds = load_dataset("math-ai/aime24", split="test")
+        items = [dict(id=f"aime24-{r['id']}", problem=r["problem"],
+                      answer=last_boxed(r["solution"]) or r["solution"],
+                      subject="aime24", level="aime") for r in ds]
+    elif name == "aime25":
+        ds = load_dataset("math-ai/aime25", split="test")
+        items = [dict(id=f"aime25-{r['id']}", problem=r["problem"], answer=str(r["answer"]),
+                      subject="aime25", level="aime") for r in ds]
+    else:
+        raise ValueError(f"unknown dataset {name}")
+    if n_problems and n_problems < len(items):
+        idx = sorted(random.Random(seed).sample(range(len(items)), n_problems))
+        items = [items[i] for i in idx]
+    return items
+
+
+# --------------------------------------------------------------------------- executor
+def execute(code: str, timeout: float = 10.0, max_chars: int = 2000):
+    """Run `code` with python -I in a temp dir. Returns (output_text, errored)."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "snippet.py"
+        path.write_text(code)
+        try:
+            r = subprocess.run([sys.executable, "-I", str(path)], cwd=d, capture_output=True,
+                               text=True, timeout=timeout)
+            out, err = r.stdout, r.returncode != 0
+            if err:
+                tail = r.stderr.strip().splitlines()
+                out = (out + "\n" + tail[-1]) if tail else out
+        except subprocess.TimeoutExpired:
+            out, err = f"Timeout: code ran longer than {timeout:.0f}s", True
+    out = out.strip()
+    if len(out) > max_chars:
+        out = out[:max_chars] + "...[truncated]"
+    return out, err
+
+
+# --------------------------------------------------------------------------- tool loop
+class Sample:
+    __slots__ = ("pidx", "sidx", "prompt", "gen", "gen_tokens", "n_calls", "n_denied",
+                 "n_exec_err", "n_injected", "rounds", "done", "truncated", "finish")
+
+    def __init__(self, pidx, sidx, prompt):
+        self.pidx, self.sidx, self.prompt = pidx, sidx, prompt
+        self.gen = ""
+        self.gen_tokens = 0
+        self.n_calls = self.n_denied = self.n_exec_err = self.n_injected = self.rounds = 0
+        self.done = self.truncated = False
+        self.finish = None
+
+    @property
+    def context(self):
+        return self.prompt + self.gen
+
+
+def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, cond: str,
+            max_calls: int, executor=execute):
+    """Apply one generation chunk to sample `s`. Returns the text to inject (or None)."""
+    s.gen += text
+    s.gen_tokens += n_tokens
+    s.rounds += 1
+    if finish_reason == "length":
+        s.done, s.truncated, s.finish = True, True, "length"
+        return None
+    if stop_reason not in (STOP_FENCE, STOP_OUTPUT):
+        s.done, s.finish = True, "eos"
+        return None
+    code = last_code_block(text)
+    if code is None:
+        return None  # a non-python fence or a fabricated ```output: keep generating
+    s.n_calls += 1
+    if cond == "tool_on" and s.n_calls <= max_calls:
+        result, err = executor(code)
+        s.n_exec_err += int(err)
+    else:
+        result = DENIAL
+        s.n_denied += 1
+    inj = ("\n" + result + "\n```\n") if stop_reason == STOP_OUTPUT else ("```output\n" + result + "\n```\n")
+    s.gen += inj
+    s.n_injected += 1
+    return inj
+
+
+TOOL_STOPS = (STOP_FENCE, STOP_OUTPUT)
+
+
+def splice_round(pending, cond, args, pool):
+    """pending: list of (sample, text, n_tokens, finish_reason, stop_reason) for one round.
+    Executes tool_on code calls in parallel, then applies `advance` to every sample."""
+    futures = {}
+    for s, text, ntok, fin, stop in pending:
+        if (cond == "tool_on" and stop in TOOL_STOPS and fin != "length"
+                and s.n_calls + 1 <= args.max_calls):
+            code = last_code_block(text)
+            if code is not None:
+                futures[id(s)] = pool.submit(execute, code, args.exec_timeout, args.max_output_chars)
+    for s, text, ntok, fin, stop in pending:
+        fut = futures.get(id(s))
+        if fut is not None:
+            ex = lambda code, f=fut: f.result()  # noqa: E731
+        else:
+            ex = lambda code: execute(code, args.exec_timeout, args.max_output_chars)  # noqa: E731
+        advance(s, text, ntok, fin, stop, cond, args.max_calls, executor=ex)
+
+
+def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
+    """Rounds 2..N. generate(prompts, stops, budgets, seeds) -> [(text, n_tokens, finish, stop_reason)]."""
+    max_rounds = 2 * args.max_calls + 6
+    while True:
+        keep, budgets = [], []
+        for s in samples:
+            if s.done:
+                continue
+            remaining = min(args.max_tokens - s.gen_tokens,
+                            args.max_model_len - tokenize_len(s.context) - 1)
+            if remaining < 16:
+                s.done, s.truncated, s.finish = True, True, "length"
+            else:
+                keep.append(s)
+                budgets.append(remaining)
+        if not keep:
+            break
+        final = any(s.rounds >= max_rounds for s in keep)
+        stops = TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)
+        print(f"  round: {len(keep)} active, final={final}", flush=True)
+        seeds = [(args.seed * 1_000_003 + s.pidx * 4096 + s.sidx * 64 + s.rounds) % (2 ** 31) for s in keep]
+        outs = generate([s.context for s in keep], stops, budgets, seeds)
+        splice_round([(s,) + tuple(o) for s, o in zip(keep, outs)], cond, args, pool)
+
+
+# --------------------------------------------------------------------------- records
+def to_record(s: Sample, item, cond, template, model, tag, grade):
+    text = s.gen
+    fake_outputs = max(0, text.count(STOP_OUTPUT) - s.n_injected)
+    prose = strip_fenced(text)
+    a_n, a_wrong, _ = arith_check.check(prose)
+    return dict(
+        model=model, tag=tag, condition=cond, template=template,
+        problem_id=item["id"], subject=item.get("subject"), level=item.get("level"),
+        sample_idx=s.sidx, correct=bool(grade(text, item["answer"])), gold=item["answer"],
+        boxed=last_boxed(text), boxed_present=last_boxed(text) is not None,
+        truncated=s.truncated, finish=s.finish, gen_tokens=s.gen_tokens, rounds=s.rounds,
+        code_emitted="```python" in text or "```py" in text, fake_outputs=fake_outputs,
+        n_calls=s.n_calls, n_denied=s.n_denied, n_exec_err=s.n_exec_err,
+        arith_n=a_n, arith_wrong=a_wrong, text=text,
+    )
+
+
+# --------------------------------------------------------------------------- main
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--model", required=True)
+    p.add_argument("--revision", default=None)
+    p.add_argument("--tag", required=True, help="role label: base | tool_rl | text_rl | ...")
+    p.add_argument("--conditions", default="prompt_off")
+    p.add_argument("--shared-template", default="qwen_math_cot")
+    p.add_argument("--native-template", default="qwen_math_cot",
+                   help="the model's own training prompt, used for env_denied and tool_on")
+    p.add_argument("--prompt-off-template", choices=["shared", "native"], default="shared")
+    p.add_argument("--dataset", default="math500", choices=["math500", "aime24", "aime25"])
+    p.add_argument("--n-problems", type=int, default=0, help="0 = all")
+    p.add_argument("--n", type=int, default=16, help="samples per problem")
+    p.add_argument("--max-tokens", type=int, default=3000)
+    p.add_argument("--max-model-len", type=int, default=4096)
+    p.add_argument("--allow-long", action="store_true",
+                   help="override max_position_embeddings so max-model-len can exceed the config")
+    p.add_argument("--temperature", type=float, default=0.6)
+    p.add_argument("--top-p", type=float, default=0.95)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--max-calls", type=int, default=4)
+    p.add_argument("--exec-timeout", type=float, default=10.0)
+    p.add_argument("--exec-workers", type=int, default=8)
+    p.add_argument("--max-output-chars", type=int, default=2000)
+    p.add_argument("--gpu-mem", type=float, default=0.90)
+    p.add_argument("--dtype", default="auto")
+    p.add_argument("--out", required=True, help="results directory")
+    p.add_argument("--overwrite", action="store_true")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    conds = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    for c in conds:
+        if c not in CONDITIONS:
+            sys.exit(f"unknown condition {c}; choose from {CONDITIONS}")
+    out_dir = Path(args.out) / args.dataset
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def out_path(cond, template):
+        return out_dir / f"{args.tag}__{cond}__{template}.jsonl"
+
+    def template_for(cond):
+        if cond == "prompt_off":
+            return args.shared_template if args.prompt_off_template == "shared" else args.native_template
+        return args.native_template
+
+    todo = [(c, template_for(c)) for c in conds
+            if args.overwrite or not out_path(c, template_for(c)).exists()]
+    if not todo:
+        print("all conditions already done, nothing to do (use --overwrite to redo)")
+        return
+    items = load_problems(args.dataset, args.n_problems, args.seed)
+    grade, grader_name = make_grader()
+    print(f"{len(items)} problems from {args.dataset}; grader={grader_name}; todo={todo}", flush=True)
+
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    if args.allow_long:
+        os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+    import torch  # type: ignore
+    from vllm import LLM, SamplingParams  # type: ignore
+    dtype = args.dtype
+    if dtype == "auto":
+        major = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 8
+        dtype = "bfloat16" if major >= 8 else "float16"
+    kw = dict(model=args.model, dtype=dtype, max_model_len=args.max_model_len, seed=args.seed,
+              gpu_memory_utilization=args.gpu_mem, enable_prefix_caching=True)
+    if args.revision:
+        kw["revision"] = args.revision
+    if args.allow_long:
+        kw["hf_overrides"] = {"max_position_embeddings": args.max_model_len}
+    t0 = time.time()
+    llm = LLM(**kw)
+    tok = llm.get_tokenizer()
+    print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
+
+    def tokenize_len(text):
+        return len(tok(text, add_special_tokens=False)["input_ids"])
+
+    def sp(n, max_tokens, stops, seed=None):
+        return SamplingParams(n=n, temperature=args.temperature, top_p=args.top_p,
+                              seed=args.seed if seed is None else seed,
+                              max_tokens=max_tokens, stop=stops, include_stop_str_in_output=True)
+
+    def generate(prompts, stops, budgets, seeds):
+        params = [sp(1, b, stops, seed) for b, seed in zip(budgets, seeds)]
+        res = llm.generate(prompts, params, use_tqdm=False)
+        outs = []
+        for r in res:
+            o = r.outputs[0]
+            outs.append((o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
+        return outs
+
+    for cond, template in todo:
+        t1 = time.time()
+        prompts = [build_prompt(template, it["problem"]) for it in items]
+        print(f"== {args.tag} / {cond} / {template}: {len(prompts)} prompts x {args.n} samples", flush=True)
+        samples = []
+        if cond == "prompt_off":
+            res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS), use_tqdm=True)
+            for pidx, r in enumerate(res):
+                for sidx, o in enumerate(r.outputs):
+                    s = Sample(pidx, sidx, prompts[pidx])
+                    advance(s, o.text, len(o.token_ids), o.finish_reason, None, cond, 0)
+                    if o.finish_reason == "length":
+                        s.truncated, s.finish = True, "length"
+                    samples.append(s)
+        else:
+            res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
+            first = []
+            for pidx, r in enumerate(res):
+                for sidx, o in enumerate(r.outputs):
+                    s = Sample(pidx, sidx, prompts[pidx])
+                    samples.append(s)
+                    first.append((s, o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
+            pool = ThreadPoolExecutor(max_workers=args.exec_workers)
+            splice_round(first, cond, args, pool)
+            run_tool_loop(generate, tokenize_len, samples, cond, args, pool)
+            pool.shutdown(wait=True)
+        gen_s = time.time() - t1
+        recs = [to_record(s, items[s.pidx], cond, template, args.model, args.tag, grade) for s in samples]
+        path = out_path(cond, template)
+        with open(path, "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        acc = sum(r["correct"] for r in recs) / max(1, len(recs))
+        meta = dict(vars(args), condition=cond, template=template, dtype=dtype, grader=grader_name,
+                    n_problems=len(items), n_records=len(recs), pass1=acc, gen_seconds=gen_s,
+                    total_gen_tokens=sum(r["gen_tokens"] for r in recs))
+        path.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
+        print(f"   pass@1={acc:.3f}  truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
+              f"tokens={meta['total_gen_tokens'] / 1e6:.2f}M  {gen_s / 60:.1f} min -> {path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
