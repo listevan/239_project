@@ -62,6 +62,40 @@ def test_per_row_timeout_marks_incorrect_and_kills_workers():
     assert buf.getvalue().count("TIMEOUT") == 2
 
 
+def test_report_run_resolves_root_and_grades_first():
+    import os
+    import report
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "results"; folder = root / "smoke" / "math500"; folder.mkdir(parents=True)
+        for tag in ("base", "text_rl", "tool_rl"):
+            path = folder / f"{tag}__prompt_off__qwen_math_nocode.jsonl"
+            recs = [dict(row(f"p{i}", k, r"\boxed{7}" if (i + k) % 2 else r"\boxed{8}", "7"),
+                         tag=tag, template="t", model="m", subject="s", level="1", boxed_present=True, finish="eos",
+                         gen_tokens=10, rounds=1, code_emitted=False, fake_outputs=0, n_exec_err=0)
+                    for i in range(4) for k in range(2)]
+            gen.write_jsonl_atomic(path, recs)
+            gen.meta_path(path).write_text(json.dumps(dict(n=2, n_problems=4, pass1=None, graded=False)))
+        old = os.environ.get("RESULTS_ROOT"); os.environ["RESULTS_ROOT"] = str(root)
+        buf = io.StringIO()
+        try:
+            assert report.find_results_root() == root
+            with contextlib.redirect_stdout(buf):
+                report.main(["--run", "smoke", "--no-ci", "--workers", "2"])
+        finally:
+            if old is None:
+                del os.environ["RESULTS_ROOT"]
+            else:
+                os.environ["RESULTS_ROOT"] = old
+        out = buf.getvalue()
+        assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out and "figures ->" in out
+        assert (folder / "passk_main.png").stat().st_size > 1000 and (folder / "passk_by_model.png").exists()
+        assert json.load(open(folder / "base__prompt_off__qwen_math_nocode.meta.json"))["graded"] is True
+        try:
+            report.main(["--run", "nope"])
+            raise AssertionError("expected SystemExit")
+        except SystemExit as e:
+            assert "no such folder" in str(e)
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

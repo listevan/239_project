@@ -40,12 +40,15 @@ mark it "available offline") or through the zip cell at the bottom of the notebo
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
-.venv/bin/python src/grade.py  "<results>/math-1.5b/math500"    # fills `correct` in place, skips graded rows
-.venv/bin/python src/report.py "<results>/math-1.5b/math500"    # tables, verdicts, passk_by_model.png, passk_main.png
+.venv/bin/python src/report.py --run math-1.5b --dataset math500            # grade + tables + figures
 ```
 
-`grade.py` runs math-verify in worker processes with a per-row timeout and reports
-the slowest rows. In a notebook, `import analyze as an` gives `an.load_results`,
+`report.py --run` finds the folder under the synced Drive (or `$RESULTS_ROOT`, or
+`./results`), grades ungraded rows first (`src/grade.py`: math-verify in worker
+processes with a per-row timeout, slowest rows reported, graded rows skipped), then
+prints the summary, pass@k and verdicts and saves `passk_by_model.png` and
+`passk_main.png` next to the data. Pass a folder path instead of `--run` for an
+unzipped download. In a notebook, `import analyze as an` gives `an.load_results`,
 `an.summary`, `an.passk_table`, `an.verdict` and `an.plot(df, ["model condition", ...])`.
 
 Rough A100 cost at MATH-500 x 16 samples for the nine-arm grid: 1.5B about two

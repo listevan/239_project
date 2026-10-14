@@ -1,11 +1,15 @@
 #!/usr/bin/env python
-"""Tables and figures from a graded results folder, on any machine.
+"""Grade (if needed) and report a results folder, on any machine. The one local command:
 
-    python src/report.py results/<run>/<dataset> [--title T] [--no-ci]
+    python src/report.py --run math-1.5b-smoke [--dataset math500]
+    python src/report.py <results>/<run>/<dataset>            # explicit folder
 
-Prints the summary table, the pass@k table and the verdict for every condition, and saves
-passk_by_model.png (one panel per model, conditions as lines) and passk_main.png (tool-RL with the
-tool off against the text-RL control and the base) next to the results.
+--run finds the folder under the synced Google Drive for desktop
+(~/Library/CloudStorage/GoogleDrive-*/My Drive/239_project/results), else $RESULTS_ROOT, else
+./results. Ungraded rows are graded first with src/grade.py (skip with --no-grade). Then: the summary
+table, the pass@k table, the verdict for every condition, and passk_by_model.png (one panel per model,
+conditions as lines) plus passk_main.png (tool-RL with the tool off against the control and the base),
+saved next to the data.
 """
 import argparse
 import os
@@ -25,16 +29,41 @@ BY_MODEL = {
 MAIN = ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on", "base prompt_off", "base tool_on"]
 
 
+def find_results_root():
+    """$RESULTS_ROOT, else the Drive for desktop mirror of MyDrive/239_project/results, else ./results."""
+    if os.environ.get("RESULTS_ROOT"):
+        return Path(os.environ["RESULTS_ROOT"])
+    for p in sorted(Path.home().glob("Library/CloudStorage/GoogleDrive-*/My Drive/239_project/results")):
+        return p
+    return Path(__file__).resolve().parents[1] / "results"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("results_dir")
-    ap.add_argument("--title", default=None, help="figure title prefix (default: the folder name)")
+    ap.add_argument("results_dir", nargs="?", help="explicit <run>/<dataset> folder")
+    ap.add_argument("--run", help="run name, e.g. math-1.5b-smoke (folder found under the synced Drive)")
+    ap.add_argument("--dataset", default="math500")
+    ap.add_argument("--title", default=None, help="figure title prefix (default: run / dataset)")
     ap.add_argument("--no-ci", action="store_true", help="skip the bootstrap bands (faster)")
+    ap.add_argument("--no-grade", action="store_true", help="do not grade ungraded rows first")
+    ap.add_argument("--workers", type=int, default=None, help="grading worker processes")
     args = ap.parse_args(argv)
-    d = Path(args.results_dir)
+    if args.results_dir:
+        d = Path(args.results_dir)
+    elif args.run:
+        d = find_results_root() / args.run / args.dataset
+    else:
+        ap.error("give a results folder or --run NAME")
+    if not d.is_dir():
+        sys.exit(f"no such folder: {d}\n(results root: {find_results_root()}; install Google Drive for desktop, "
+                 f"set RESULTS_ROOT, or pass the unzipped folder explicitly)")
     title = args.title or f"{d.parent.name} / {d.name}"
     pd.set_option("display.width", 220); pd.set_option("display.max_columns", 40)
 
+    if not args.no_grade:
+        import grade
+        grade.grade_dir(d, grade.default_workers() if args.workers is None else args.workers)
+        print()
     df = an.load_results(d)
     print(f"{len(df)} samples, {df.problem_id.nunique()} problems, {df.arm.nunique()} arms\n")
     print(an.summary(df).to_string(index=False), "\n")

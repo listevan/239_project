@@ -444,15 +444,14 @@ cells below stop with a message. Grade and analyze on your laptop instead:
 ```
 cd ~/projects/239_project
 python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
-.venv/bin/python src/grade.py  "<results>/math-1.5b-smoke/math500"
-.venv/bin/python src/report.py "<results>/math-1.5b-smoke/math500"
+.venv/bin/python src/report.py --run math-1.5b-smoke --dataset math500
 ```
 
-where `<results>` is the synced Drive folder (Google Drive for desktop:
-`~/Library/CloudStorage/GoogleDrive-<account>/My Drive/239_project/results`) or
-the unzipped download from the last cell. `grade.py` fills `correct` in place and
-skips rows already graded; `report.py` prints the tables and saves the two figures
-next to the data. The same functions are available in a local notebook via
+`report.py --run` finds the run under Google Drive for desktop
+(`~/Library/CloudStorage/GoogleDrive-<account>/My Drive/239_project/results`),
+grades the ungraded rows in place first (`src/grade.py`, skips rows already
+graded), then prints the tables and saves the two figures next to the data. Pass a
+folder instead of `--run` for an unzipped download from the last cell. The same functions are available in a local notebook via
 `import analyze as an` (`an.load_results`, `an.summary`, `an.plot`).
 
 With `GRADE_ON_COLAB = True` everything below runs here.
@@ -478,13 +477,19 @@ importlib.reload(an)
 import pandas as pd
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 
-df = load_run(require_graded=True)   # current config's files only; strays from older runs are listed and skipped
-print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
-an.summary(df)
+if GRADE_ON_COLAB:
+    df = load_run(require_graded=True)   # current config's files only; strays from older runs are listed and skipped
+    print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
+    display(an.summary(df))
+else:
+    df = None
+    print("Generation done. Rows are ungraded here (GRADE_ON_COLAB = False). On your laptop:\n"
+          f"  cd ~/projects/239_project && .venv/bin/python src/report.py --run {RUN_NAME} --dataset {DATASET}")
 """
 
 PLOT = r"""
-an.passk_table(df).round(3)
+if df is not None:
+    display(an.passk_table(df).round(3))
 """
 
 PLOT2 = r"""
@@ -496,27 +501,30 @@ PLOT2 = r"""
 # save=... writes a PNG next to the results. Lines not in the results are skipped with a note.
 
 # Figure 1: within each model, what does turning the tool off cost?
-an.plot(df, {
-    "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
-    "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
-    "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
-}, color="condition", title=f"{RUN_NAME}: pass@k within each model", save=f"{OUT}/{DATASET}/passk_by_model.png");
+if df is not None:
+    an.plot(df, {
+        "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
+        "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
+        "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
+    }, color="condition", title=f"{RUN_NAME}: pass@k within each model", save=f"{OUT}/{DATASET}/passk_by_model.png");
 """
 
 PLOT3 = r"""
 # Figure 2: tool-RL with the tool off, against the text-RL control and the base model
-an.plot(df, [
-    "tool_rl prompt_off",
-    "text_rl prompt_off", "text_rl tool_on",
-    "base prompt_off",    "base tool_on",
-], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base", save=f"{OUT}/{DATASET}/passk_main.png");
+if df is not None:
+    an.plot(df, [
+        "tool_rl prompt_off",
+        "text_rl prompt_off", "text_rl tool_on",
+        "base prompt_off",    "base tool_on",
+    ], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base", save=f"{OUT}/{DATASET}/passk_main.png");
 """
 
 VERDICT = r"""
-for cond in an.COND_ORDER:
-    if cond in set(df.condition):
-        an.verdict(df, cond)
-        print()
+if df is not None:
+    for cond in an.COND_ORDER:
+        if cond in set(df.condition):
+            an.verdict(df, cond)
+            print()
 """
 
 NEXT_MD = r"""
