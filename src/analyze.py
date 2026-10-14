@@ -4,7 +4,9 @@ Usage in a notebook:
     import analyze as an
     df = an.load_results("results/math-1.5b/math500")
     an.summary(df)                 # one row per (tag, condition)
-    an.plot_passk(df)              # pass@k curves, one panel per condition
+    an.plot_passk_by_model(df)     # one panel per model, conditions as lines (tool-off cost per model)
+    an.plot_passk_main(df)         # headline: chosen arms on one axis, color = model, style = condition
+    an.plot_passk(df)              # older view: one panel per condition, models as lines
     an.verdict(df)                 # atrophy / internalization / overlap readout
 """
 import json
@@ -20,6 +22,13 @@ ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
 COND_ORDER = ["prompt_off", "env_denied", "tool_on", "plain_cot"]
 COND_STYLE = {"prompt_off": "-", "env_denied": "--", "tool_on": ":", "plain_cot": "-."}
 COND_MARK = {"prompt_off": "o", "env_denied": "s", "tool_on": "^", "plain_cot": "D"}
+# conditions get hues of their own (reference palette slots 7, 8, 4, 6, validated as a set) so a
+# per-model panel never reuses a model color
+COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "tool_on": "#eda100", "plain_cot": "#008300"}
+# default arms of the headline figure: tool-RL with the tool off against the control and the base
+MAIN_ARMS = [("tool_rl", "prompt_off"),
+             ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
+             ("base", "prompt_off"), ("base", "tool_on")]
 
 
 def load_results(results_dir) -> pd.DataFrame:
@@ -174,6 +183,70 @@ def plot_passk(df: pd.DataFrame, title=None, ci=True, iters=300, facet=True):
         ax.set_title(cond, loc="left")
     axes[0].set_ylabel("pass@k")
     fig.suptitle(title or f"pass@k, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
+    fig.tight_layout()
+    return fig
+
+
+def _format_axis(ax, n_max):
+    ks = ks_for(int(n_max))
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ks)
+    ax.set_xticklabels([str(k) for k in ks])
+    ax.set_xlabel("k (samples)")
+    ax.set_ylim(0, 1)
+    ax.grid(True, color="#e6e5e1", lw=0.8)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
+
+def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
+    """One pass@k curve (plus bootstrap band) for arm (tag, cond). Returns False if absent."""
+    row = pk[(pk.tag == tag) & (pk.condition == cond)]
+    if row.empty:
+        return False
+    r = row.iloc[0]
+    ks = ks_for(int(r["n_samples"]))
+    ax.plot(ks, [r[f"pass@{k}"] for k in ks], style, color=color, lw=2,
+            marker=COND_MARK.get(cond, "o"), ms=6, label=label)
+    if ci:
+        lo, hi = zip(*[bootstrap_passk(df, tag, cond, k, iters=iters)[1:] for k in ks])
+        ax.fill_between(ks, lo, hi, color=color, alpha=0.12, lw=0)
+    return True
+
+
+def plot_passk_by_model(df: pd.DataFrame, title=None, ci=True, iters=300):
+    """One panel per model, the conditions as lines: what turning the tool off costs each model."""
+    import matplotlib.pyplot as plt
+    pk = passk_table(df)
+    tags = [t for t in ROLE_ORDER if t in set(pk.tag)] + sorted(set(pk.tag) - set(ROLE_ORDER))
+    fig, axes = plt.subplots(1, len(tags), figsize=(4.6 * len(tags), 4.2), dpi=120, sharey=True, squeeze=False)
+    for ax, tag in zip(axes[0], tags):
+        have = set(pk[pk.tag == tag].condition)
+        for cond in [c for c in COND_ORDER if c in have] + sorted(have - set(COND_ORDER)):
+            _draw_arm(ax, df, pk, tag, cond, COND_COLOR.get(cond, "#52514e"), "-", cond, ci, iters)
+        _format_axis(ax, pk[pk.tag == tag]["n_samples"].max())
+        ax.set_title(tag, loc="left")
+        ax.legend(frameon=False, fontsize=8, loc="lower right")
+    axes[0][0].set_ylabel("pass@k")
+    fig.suptitle(title or f"pass@k within each model, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
+    fig.tight_layout()
+    return fig
+
+
+def plot_passk_main(df: pd.DataFrame, arms=MAIN_ARMS, title=None, ci=True, iters=300):
+    """Headline figure: the given (tag, condition) arms on one axis. Color = model, line style = condition."""
+    import matplotlib.pyplot as plt
+    pk = passk_table(df)
+    fig, ax = plt.subplots(figsize=(7, 4.8), dpi=120)
+    missing = [f"{t}/{c}" for t, c in arms
+               if not _draw_arm(ax, df, pk, t, c, ROLE_COLOR.get(t, "#52514e"), COND_STYLE.get(c, "-"),
+                                f"{t} / {c}", ci, iters)]
+    if missing:
+        print("not in results, skipped:", ", ".join(missing))
+    _format_axis(ax, pk["n_samples"].max())
+    ax.set_ylabel("pass@k")
+    ax.legend(frameon=False, fontsize=8, loc="lower right")
+    ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
     fig.tight_layout()
     return fig
 

@@ -430,6 +430,11 @@ uninterpretable, so read them before the curves. Under `prompt_off`, `calls_mean
 is how often the model wrote code after being told not to. `arith_err_pct` is the direct skill metric
 (exact-rational check of every `a op b = c` in the prose, code blocks excluded);
 `arith_coverage_pct` says how many samples contained anything to check.
+
+Two figures. **By model**: one panel per checkpoint, the three conditions as
+lines, so you see what turning the tool off costs that model. **Main**: tool-RL
+with the tool off on the same axis as the text-RL control and the base model, with
+their tool_on curves as reference. Color is the model, line style the condition.
 """
 
 ANALYZE = r"""
@@ -450,8 +455,20 @@ an.passk_table(df).round(3)
 """
 
 PLOT2 = r"""
-fig = an.plot_passk(df, title=f"{RUN_NAME} / {DATASET}: pass@k by condition")
-fig.savefig(f"{OUT}/{DATASET}/passk.png", bbox_inches="tight")
+# Within each model: what does turning the tool off (prompt_off, env_denied) cost, relative to tool_on?
+fig = an.plot_passk_by_model(df, title=f"{RUN_NAME} / {DATASET}: pass@k within each model")
+fig.savefig(f"{OUT}/{DATASET}/passk_by_model.png", bbox_inches="tight")
+"""
+
+PLOT3 = r"""
+# The headline: tool-RL with the tool off against the text-RL control and the base model.
+# Color = model, line style = condition. Edit MAIN_ARMS to change what is drawn.
+MAIN_ARMS = [("tool_rl", "prompt_off"),
+             ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
+             ("base", "prompt_off"), ("base", "tool_on")]
+fig = an.plot_passk_main(df, arms=MAIN_ARMS, title=f"{RUN_NAME} / {DATASET}: tool-RL with the tool off vs control and base")
+fig.savefig(f"{OUT}/{DATASET}/passk_main.png", bbox_inches="tight")
+# an.plot_passk(df)   # the older view: one panel per condition, models as lines
 """
 
 VERDICT = r"""
@@ -518,7 +535,7 @@ def build():
         md(FILES_MD), writefile("arith_check.py"), writefile("gen.py"), writefile("analyze.py"),
         md(CONFIG_MD), code(CONFIG),
         md(RUN_MD), code(RUN_SETUP), code(RUN_BASE), code(RUN_TEXT_RL), code(RUN_TOOL_RL),
-        md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(PLOT2), code(VERDICT),
+        md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(PLOT2), code(PLOT3), code(VERDICT),
         md(NEXT_MD), code(DOWNLOAD),
     ]
     nbf.validate(nb)
