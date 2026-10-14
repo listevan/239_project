@@ -96,6 +96,24 @@ def test_report_run_resolves_root_and_grades_first():
         except SystemExit as e:
             assert "no such folder" in str(e)
 
+def test_find_results_root_searches_nested_drive_folders():
+    import os
+    import report
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        nested = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/UCLA (Jun 2026 onward)/239_project/results"
+        nested.mkdir(parents=True)
+        old = os.environ.pop("RESULTS_ROOT", None)
+        try:
+            assert report.find_results_root(home=home) == nested
+            shallow = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/239_project/results"
+            shallow.mkdir(parents=True)
+            assert report.find_results_root(home=home) == shallow   # shallowest wins
+            assert report.find_results_root(home=home / "nowhere").name == "results"  # repo fallback
+        finally:
+            if old is not None:
+                os.environ["RESULTS_ROOT"] = old
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

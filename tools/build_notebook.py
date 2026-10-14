@@ -93,14 +93,19 @@ print(subprocess.run([sys.executable, "-c", "import vllm, math_verify, datasets;
 DRIVE_MD = r"""
 ## 2. Where results go
 
-Results are written under `MyDrive/239_project/results/<run>/<dataset>/` so they
-survive the session. Accept the Drive popup; if the path printed below starts with
-`/content/239_project_runs` the results are on the VM disk and die with it.
-Outside Colab this falls back to a local folder.
+Results are written under `239_project/results/<run>/<dataset>/` on Drive so they
+survive the session. An existing `239_project` folder anywhere up to three levels
+under MyDrive is reused, so you can file it wherever you like in Drive; otherwise
+`MyDrive/239_project` is created. Accept the Drive popup; if the path printed below
+starts with `/content/239_project_runs` the results are on the VM disk and die with
+it. Outside Colab this falls back to a local folder.
 """
 
 DRIVE = r"""
-import os
+import glob, os
+PROJECT_DIR = None   # None: reuse an existing 239_project folder anywhere up to 3 levels under MyDrive
+                     # (so moving it around in Drive is fine), else create MyDrive/239_project.
+                     # Or name it explicitly, e.g. "UCLA (Jun 2026 onward)/239_project".
 try:
     from google.colab import drive  # noqa: F401
     ON_COLAB = True
@@ -109,8 +114,15 @@ except ImportError:
 if ON_COLAB:
     # If the auth popup is dismissed this raises: results must land on Drive, not on the VM disk.
     drive.mount("/content/drive")
-    ROOT = "/content/drive/MyDrive/239_project"
     assert os.path.isdir("/content/drive/MyDrive"), "Drive did not mount; re-run this cell and accept the popup"
+    if PROJECT_DIR:
+        ROOT = f"/content/drive/MyDrive/{PROJECT_DIR}"
+    else:
+        hits = sorted((p for d in range(4) for p in glob.glob("/content/drive/MyDrive/" + "*/" * d + "239_project/results")
+                       if os.path.isdir(p)), key=lambda p: p.count("/"))
+        ROOT = os.path.dirname(hits[0]) if hits else "/content/drive/MyDrive/239_project"
+        if len(hits) > 1:
+            print("several 239_project/results folders on Drive, using the first:", *hits, sep="\n  ")
 else:
     ROOT = os.path.abspath("239_project_runs")
 RESULTS = f"{ROOT}/results"
@@ -447,9 +459,9 @@ uv sync                                                        # once
 uv run src/report.py --run math-1.5b-smoke --dataset math500
 ```
 
-`report.py --run` finds the run under Google Drive for desktop
-(`~/Library/CloudStorage/GoogleDrive-<account>/My Drive/239_project/results`),
-grades the ungraded rows in place first (`src/grade.py`, skips rows already
+`report.py --run` finds the run under Google Drive for desktop (any
+`239_project/results` up to three levels under My Drive), grades the ungraded rows
+in place first (`src/grade.py`, skips rows already
 graded), then prints the tables and saves the two figures next to the data. Pass a
 folder instead of `--run` for an unzipped download from the last cell. The same functions are available in a local notebook via
 `import analyze as an` (`an.load_results`, `an.summary`, `an.plot`).

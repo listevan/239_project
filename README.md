@@ -34,9 +34,9 @@ The full plan is in `docs/experiment1_plan.md`.
 
 ## Grade and analyze locally
 
-Trajectories reach the laptop through Google Drive for desktop (the Drive folder
-`239_project/results` appears under `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/`,
-mark it "available offline") or through the zip cell at the bottom of the notebook.
+Trajectories reach the laptop through Google Drive for desktop (the `239_project`
+folder may sit anywhere up to three levels under My Drive; both the notebook and
+`report.py --run` find it) or through the zip cell at the bottom of the notebook.
 
 ```
 uv sync                                                  # once: .venv from pyproject.toml (uv.lock pins it)

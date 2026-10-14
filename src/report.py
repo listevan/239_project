@@ -4,9 +4,8 @@
     python src/report.py --run math-1.5b-smoke [--dataset math500]
     python src/report.py <results>/<run>/<dataset>            # explicit folder
 
---run finds the folder under the synced Google Drive for desktop
-(~/Library/CloudStorage/GoogleDrive-*/My Drive/239_project/results), else $RESULTS_ROOT, else
-./results. Ungraded rows are graded first with src/grade.py (skip with --no-grade). Then: the summary
+--run finds the folder under the synced Google Drive for desktop (any 239_project/results up to
+three levels under ~/Library/CloudStorage/GoogleDrive-*/My Drive), else $RESULTS_ROOT, else ./results. Ungraded rows are graded first with src/grade.py (skip with --no-grade). Then: the summary
 table, the pass@k table, the verdict for every condition, and passk_by_model.png (one panel per model,
 conditions as lines) plus passk_main.png (tool-RL with the tool off against the control and the base),
 saved next to the data.
@@ -29,12 +28,17 @@ BY_MODEL = {
 MAIN = ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on", "base prompt_off", "base tool_on"]
 
 
-def find_results_root():
-    """$RESULTS_ROOT, else the Drive for desktop mirror of MyDrive/239_project/results, else ./results."""
+def find_results_root(home=None):
+    """$RESULTS_ROOT, else a 239_project/results folder up to three levels under any Google Drive
+    for desktop mount (shallowest first), else ./results."""
     if os.environ.get("RESULTS_ROOT"):
         return Path(os.environ["RESULTS_ROOT"])
-    for p in sorted(Path.home().glob("Library/CloudStorage/GoogleDrive-*/My Drive/239_project/results")):
-        return p
+    hits = []
+    for mount in sorted(Path(home or Path.home()).glob("Library/CloudStorage/GoogleDrive-*/My Drive")):
+        for depth in range(4):
+            hits += [q for q in mount.glob("*/" * depth + "239_project/results") if q.is_dir()]
+    if hits:
+        return sorted(hits, key=lambda q: len(q.parts))[0]
     return Path(__file__).resolve().parents[1] / "results"
 
 
