@@ -92,16 +92,24 @@ DRIVE_MD = r"""
 ## 2. Where results go
 
 Results are written under `MyDrive/239_project/results/<run>/<dataset>/` so they
-survive the session. Outside Colab this falls back to a local folder.
+survive the session. Accept the Drive popup; if the path printed below starts with
+`/content/239_project_runs` the results are on the VM disk and die with it.
+Outside Colab this falls back to a local folder.
 """
 
 DRIVE = r"""
 import os
 try:
-    from google.colab import drive
+    from google.colab import drive  # noqa: F401
+    ON_COLAB = True
+except ImportError:
+    ON_COLAB = False
+if ON_COLAB:
+    # If the auth popup is dismissed this raises: results must land on Drive, not on the VM disk.
     drive.mount("/content/drive")
     ROOT = "/content/drive/MyDrive/239_project"
-except Exception:
+    assert os.path.isdir("/content/drive/MyDrive"), "Drive did not mount; re-run this cell and accept the popup"
+else:
     ROOT = os.path.abspath("239_project_runs")
 RESULTS = f"{ROOT}/results"
 os.makedirs(RESULTS, exist_ok=True)
@@ -278,6 +286,19 @@ def show(tag):
         print(tbl.to_string())
 
 
+def stream(cmd):
+    # Relay the subprocess's stdout+stderr through the kernel: a line per tqdm refresh instead of
+    # a carriage-return bar, so progress shows even when Colab does not mirror child output.
+    env = dict(os.environ, TQDM_MININTERVAL="20", PYTHONUNBUFFERED="1")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    while True:
+        chunk = proc.stdout.read1(65536)
+        if not chunk:
+            break
+        print(chunk.decode("utf-8", "replace").replace("\r", "\n"), end="", flush=True)
+    return proc.wait()
+
+
 def run_model(tag):
     spec = PRESETS[PRESET]["models"][tag]
     print(f"[{tag}] {spec['model']}  ->  {OUT}/{DATASET}")
@@ -300,9 +321,9 @@ def run_model(tag):
             cmd += ["--denial-text", DENIAL_TEXT]
         print("\n$", " ".join(cmd), flush=True)
         t0 = time.time()
-        r = subprocess.run(cmd)
-        print(f"\n[{tag}] exit {r.returncode} after {(time.time() - t0) / 60:.1f} min", flush=True)
-        if r.returncode != 0:
+        rc = stream(cmd)
+        print(f"\n[{tag}] exit {rc} after {(time.time() - t0) / 60:.1f} min", flush=True)
+        if rc != 0:
             print("fix the error above and re-run this cell; finished arms and chunks are kept")
         status(tag)
     show(tag)

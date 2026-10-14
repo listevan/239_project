@@ -437,9 +437,13 @@ def main(argv=None):
     if not todo:
         print("all conditions already done, nothing to do (use --overwrite to redo)")
         return
+    print(f"gen.py starting: {args.tag} {args.model}; todo={todo}", flush=True)
+    print(f"loading {args.dataset} from the HF hub...", flush=True)
     items = load_problems(args.dataset, args.n_problems, args.seed)
+    print("loading grader (math_verify)...", flush=True)
     grade, grader_name = make_grader()
-    print(f"{len(items)} problems from {args.dataset}; grader={grader_name}; todo={todo}", flush=True)
+    print(f"{len(items)} problems from {args.dataset}; grader={grader_name}", flush=True)
+    print("importing torch + vllm (first time: a minute or two)...", flush=True)
 
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
     if args.allow_long:
