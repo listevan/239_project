@@ -45,8 +45,8 @@ The only published hint is CIR (2505.24480) Fig. 6: one 7B model, no text-RL
 control. This notebook adds the control and a direct skill metric.
 
 **What runs.** `src/gen.py` samples one checkpoint under each condition with vLLM
-and writes one JSONL per (model, condition) to Google Drive, so a disconnect costs
-at most one condition. `src/analyze.py` turns the JSONL into pass@k curves,
+and writes one JSONL per (model, condition) to Google Drive, checkpointing every
+`CHUNK` problems, so a disconnect costs at most one chunk. `src/analyze.py` turns the JSONL into pass@k curves,
 bootstrap CIs, and a verdict. Every model gets the same grid, so each condition is
 read as its own three-way comparison.
 
@@ -184,6 +184,8 @@ SHARED_TEMPLATE = "qwen_math_nocode"   # prompt_off prompt, identical for every 
 PLAIN_COT = False          # True adds the non-intercepting plain_cot arm (CIR's condition)
 DENIAL_TEXT = None         # None = "No interpreter is available; the code was not executed. ..."
 GPU_MEM = 0.90
+CHUNK = 100                # problems per checkpoint; a disconnect loses at most this much work
+OVERWRITE = False          # True regenerates arms that are already on Drive
 
 CONDITIONS = ["prompt_off", "env_denied", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
 RUN_NAME = f"{PRESET}{'-smoke' if SMOKE else ''}"
@@ -194,34 +196,128 @@ print(RUN_NAME, "->", OUT)
 RUN_MD = r"""
 ## 5. Run
 
-One subprocess per checkpoint: it loads the model once, runs every condition, and
-writes `<tag>__<condition>__<template>.jsonl` plus a `.meta.json` with timings.
-Finished files are skipped, so after a disconnect just re-run this cell. Expect
-the first run of each model to spend a few minutes downloading weights.
+One cell per checkpoint, below. Each cell first looks at what Drive already holds
+for that model:
+
+| On Drive | What the cell does |
+|---|---|
+| `.meta.json` for the arm | finished: loaded as is, nothing generated |
+| `.jsonl.partial` only | interrupted: resumes from the last checkpointed chunk of `CHUNK` problems |
+| nothing | generated from scratch |
+
+So after a disconnect, reconnect, re-run cells 1 to 4 (install, Drive, code,
+config), then re-run the model cell that was going. Finished arms and finished
+chunks are never redone unless `OVERWRITE = True`. The three cells can run in any
+order, one at a time (one GPU). Each one ends with a quick pass@1 table read back
+from Drive. The first run of each model spends a few minutes downloading weights.
 """
 
-RUN = r"""
-import subprocess, sys, time
-for tag, spec in PRESETS[PRESET]["models"].items():
-    cmd = [sys.executable, "src/gen.py",
-           "--model", spec["model"], "--tag", tag,
-           "--conditions", ",".join(CONDITIONS),
-           "--shared-template", SHARED_TEMPLATE, "--native-template", spec["native"],
-           "--dataset", DATASET, "--n-problems", str(N_PROBLEMS), "--n", str(N_SAMPLES),
-           "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
-           "--temperature", str(TEMPERATURE), "--top-p", str(TOP_P), "--seed", str(SEED),
-           "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--out", OUT]
-    if ALLOW_LONG:
-        cmd.append("--allow-long")
-    if DENIAL_TEXT:
-        cmd += ["--denial-text", DENIAL_TEXT]
-    print("\n$", " ".join(cmd), flush=True)
-    t0 = time.time()
-    r = subprocess.run(cmd)
-    print(f"[{tag}] exit {r.returncode} after {(time.time() - t0) / 60:.1f} min", flush=True)
-    if r.returncode != 0:
-        print("stopping: fix the error above, then re-run this cell (finished conditions are skipped)")
-        break
+RUN_SETUP = r"""
+import json, subprocess, sys, time, importlib
+from pathlib import Path
+sys.path.insert(0, "src")
+
+
+def arm_files(tag):
+    spec = PRESETS[PRESET]["models"][tag]
+    out = Path(OUT) / DATASET
+    rows = []
+    for cond in CONDITIONS:
+        tmpl = SHARED_TEMPLATE if cond == "prompt_off" else ("qwen_math_cot" if cond == "plain_cot" else spec["native"])
+        stem = out / f"{tag}__{cond}__{tmpl}"
+        rows.append((cond, stem.with_suffix(".jsonl"), stem.with_suffix(".meta.json"), Path(str(stem) + ".jsonl.partial")))
+    return rows
+
+
+def partial_problems(partial):
+    pids = set()
+    for line in open(partial):
+        try:
+            pids.add(json.loads(line)["problem_id"])
+        except (json.JSONDecodeError, KeyError):
+            pass  # torn last line
+    return len(pids)
+
+
+def status(tag):
+    # What Drive holds for this model. Returns how many arms still need generation.
+    missing = 0
+    for cond, jsonl, meta, partial in arm_files(tag):
+        if meta.exists():
+            m = json.load(open(meta))
+            note = f"done     pass@1={m['pass1']:.3f}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
+            if m["n"] != N_SAMPLES or (N_PROBLEMS and m["n_problems"] != N_PROBLEMS):
+                note += "   <- written with a different N_SAMPLES/N_PROBLEMS; set OVERWRITE=True or change RUN_NAME"
+        elif partial.exists():
+            note = f"partial  {partial_problems(partial)} problems checkpointed, will resume"
+            missing += 1
+        else:
+            note = "missing"
+            missing += 1
+        print(f"  {tag:8s} {cond:11s} {note}")
+    return missing
+
+
+def show(tag):
+    import analyze as an
+    importlib.reload(an)
+    try:
+        df = an.load_results(f"{OUT}/{DATASET}")
+    except FileNotFoundError:
+        print("no results yet"); return
+    d = df[df.tag == tag]
+    if d.empty:
+        print(f"no finished arms for {tag} yet"); return
+    tbl = d.groupby("condition").agg(samples=("correct", "size"), problems=("problem_id", "nunique"),
+                                      pass1=("correct", "mean"), trunc=("truncated", "mean"),
+                                      calls=("n_calls", "mean"), denied=("n_denied", "mean")).round(3)
+    tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index])
+    try:
+        display(tbl)
+    except NameError:
+        print(tbl.to_string())
+
+
+def run_model(tag):
+    spec = PRESETS[PRESET]["models"][tag]
+    print(f"[{tag}] {spec['model']}  ->  {OUT}/{DATASET}")
+    if status(tag) == 0 and not OVERWRITE:
+        print(f"[{tag}] every arm is already on Drive, loading instead of regenerating")
+    else:
+        cmd = [sys.executable, "src/gen.py",
+               "--model", spec["model"], "--tag", tag,
+               "--conditions", ",".join(CONDITIONS),
+               "--shared-template", SHARED_TEMPLATE, "--native-template", spec["native"],
+               "--dataset", DATASET, "--n-problems", str(N_PROBLEMS), "--n", str(N_SAMPLES),
+               "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
+               "--temperature", str(TEMPERATURE), "--top-p", str(TOP_P), "--seed", str(SEED),
+               "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--chunk", str(CHUNK), "--out", OUT]
+        if ALLOW_LONG:
+            cmd.append("--allow-long")
+        if OVERWRITE:
+            cmd.append("--overwrite")
+        if DENIAL_TEXT:
+            cmd += ["--denial-text", DENIAL_TEXT]
+        print("\n$", " ".join(cmd), flush=True)
+        t0 = time.time()
+        r = subprocess.run(cmd)
+        print(f"\n[{tag}] exit {r.returncode} after {(time.time() - t0) / 60:.1f} min", flush=True)
+        if r.returncode != 0:
+            print("fix the error above and re-run this cell; finished arms and chunks are kept")
+        status(tag)
+    show(tag)
+"""
+
+RUN_BASE = r"""
+run_model("base")
+"""
+
+RUN_TEXT_RL = r"""
+run_model("text_rl")
+"""
+
+RUN_TOOL_RL = r"""
+run_model("tool_rl")
 """
 
 ANALYZE_MD = r"""
@@ -320,7 +416,7 @@ def build():
         md(DRIVE_MD), code(DRIVE),
         md(FILES_MD), writefile("arith_check.py"), writefile("gen.py"), writefile("analyze.py"),
         md(CONFIG_MD), code(CONFIG),
-        md(RUN_MD), code(RUN),
+        md(RUN_MD), code(RUN_SETUP), code(RUN_BASE), code(RUN_TEXT_RL), code(RUN_TOOL_RL),
         md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(PLOT2), code(VERDICT),
         md(NEXT_MD), code(DOWNLOAD),
     ]

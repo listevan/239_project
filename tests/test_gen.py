@@ -162,6 +162,33 @@ def test_prompt_build():
     assert gen.build_prompt("qwen_math_cot", "Q").startswith("<|im_start|>system")
 
 
+def test_partial_resume_roundtrip():
+    import json, os, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "base__env_denied__qwen_math_tir.jsonl"
+        rec = lambda pid, sidx, ok: dict(problem_id=pid, sample_idx=sidx, correct=ok)  # noqa: E731
+        # chunk 1 complete (p0, p1), chunk 2 torn: p2 has 1 of 2 samples and a cut-off line
+        gen.write_jsonl(gen.partial_path(path), [rec("p0", 0, 1), rec("p0", 1, 0), rec("p1", 0, 1), rec("p1", 1, 1)])
+        gen.write_jsonl(gen.partial_path(path), [rec("p2", 0, 1)])
+        with open(gen.partial_path(path), "a") as f:
+            f.write('{"problem_id": "p3", "sample_')
+        kept, done = gen.read_partial(path, n=2)
+        assert done == {"p0", "p1"} and len(kept) == 4
+        items = [dict(id=f"p{i}") for i in range(5)]
+        chunks = gen.plan_chunks(items, done, chunk=2)
+        assert [[i for i, _ in c] for c in chunks] == [[2, 3], [4]]  # global indices survive
+        assert len(gen.plan_chunks(items, done, chunk=0)) == 1
+        assert gen.plan_chunks(items, {"p0", "p1", "p2", "p3", "p4"}, chunk=2) == []
+        # redo of p2 appends a full set; last write per sample_idx wins, no duplicates
+        gen.write_jsonl(gen.partial_path(path), [rec("p2", 0, 0), rec("p2", 1, 0)])
+        kept, done = gen.read_partial(path, n=2)
+        assert done == {"p0", "p1", "p2"} and len(kept) == 6
+        assert [r["correct"] for r in kept if r["problem_id"] == "p2"] == [0, 0]
+        gen.write_jsonl_atomic(path, kept)
+        assert len(open(path).read().splitlines()) == 6 and not os.path.exists(str(path) + ".tmp")
+        assert gen.meta_path(path).name == "base__env_denied__qwen_math_tir.meta.json"
+        assert not gen.partial_path(path).name.endswith(".jsonl")  # analyze.load_results globs *.jsonl
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

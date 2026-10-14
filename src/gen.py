@@ -338,8 +338,79 @@ def parse_args(argv=None):
     p.add_argument("--gpu-mem", type=float, default=0.90)
     p.add_argument("--dtype", default="auto")
     p.add_argument("--out", required=True, help="results directory")
-    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--overwrite", action="store_true", help="redo finished arms and discard partial files")
+    p.add_argument("--chunk", type=int, default=100,
+                   help="problems per checkpoint; records are appended to <arm>.jsonl.partial after each "
+                        "chunk and a restart resumes from there (0 = whole arm in one go)")
     return p.parse_args(argv)
+
+
+# --------------------------------------------------------------------------- checkpointing
+# An arm is "done" when its .meta.json exists (written last). While an arm runs, each chunk of
+# problems is appended to <arm>.jsonl.partial, so a disconnect loses at most one chunk. The
+# final .jsonl is written atomically (tmp + rename) and the partial file is removed.
+def partial_path(path: Path) -> Path:
+    return Path(str(path) + ".partial")
+
+
+def meta_path(path: Path) -> Path:
+    return path.with_suffix(".meta.json")
+
+
+def read_partial(path: Path, n: int):
+    """Records already on disk for this arm. Keeps only problems with all n sample_idx present
+    (last write wins), so a torn chunk is simply redone. Returns (records, finished problem ids)."""
+    pp = partial_path(path)
+    if not pp.exists():
+        return [], set()
+    by_pid = {}
+    with open(pp) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # torn last line from a crash mid-write
+            by_pid.setdefault(r["problem_id"], {})[r["sample_idx"]] = r
+    done = {pid for pid, d in by_pid.items() if len(d) == n}
+    recs = [by_pid[pid][k] for pid in done for k in sorted(by_pid[pid])]
+    return recs, done
+
+
+def plan_chunks(items, done_ids, chunk):
+    """Remaining (global_index, item) pairs, grouped into chunks. Global indices are kept so
+    per-sample seeds do not depend on chunking or on what was already finished."""
+    remaining = [(i, it) for i, it in enumerate(items) if it["id"] not in done_ids]
+    size = chunk if chunk > 0 else max(1, len(remaining))
+    return [remaining[s:s + size] for s in range(0, len(remaining), size)]
+
+
+def write_jsonl(path: Path, recs, mode="a"):
+    # A crash mid-write leaves a torn last line with no newline; start the append on a fresh line
+    # so the torn line stays one (ignorable) bad record instead of swallowing the next good one.
+    if mode == "a" and path.exists() and path.stat().st_size > 0:
+        with open(path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            needs_nl = f.read(1) != b"\n"
+        if needs_nl:
+            with open(path, "a") as f:
+                f.write("\n")
+    with open(path, mode) as f:
+        for r in recs:
+            f.write(json.dumps(r) + "\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass  # FUSE mounts such as Google Drive may not support fsync
+
+
+def write_jsonl_atomic(path: Path, recs):
+    tmp = Path(str(path) + ".tmp")
+    write_jsonl(tmp, recs, mode="w")
+    os.replace(tmp, path)
 
 
 def main(argv=None):
@@ -362,7 +433,7 @@ def main(argv=None):
         return args.native_template
 
     todo = [(c, template_for(c)) for c in conds
-            if args.overwrite or not out_path(c, template_for(c)).exists()]
+            if args.overwrite or not meta_path(out_path(c, template_for(c))).exists()]
     if not todo:
         print("all conditions already done, nothing to do (use --overwrite to redo)")
         return
@@ -407,43 +478,66 @@ def main(argv=None):
             outs.append((o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
         return outs
 
-    for cond, template in todo:
-        t1 = time.time()
-        prompts = [build_prompt(template, it["problem"]) for it in items]
-        print(f"== {args.tag} / {cond} / {template}: {len(prompts)} prompts x {args.n} samples", flush=True)
+    def run_arm(part, cond, template):
+        """Generate every sample for the (global_index, item) pairs in `part`; returns Samples."""
+        prompts = [build_prompt(template, it["problem"]) for _, it in part]
         samples = []
         if cond == "plain_cot":
             res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS), use_tqdm=True)
-            for pidx, r in enumerate(res):
+            for (pidx, _), prompt, r in zip(part, prompts, res):
                 for sidx, o in enumerate(r.outputs):
-                    s = Sample(pidx, sidx, prompts[pidx])
+                    s = Sample(pidx, sidx, prompt)
                     advance(s, o.text, len(o.token_ids), o.finish_reason, None, cond, 0)
                     if o.finish_reason == "length":
                         s.truncated, s.finish = True, "length"
                     samples.append(s)
-        else:
-            res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
-            first = []
-            for pidx, r in enumerate(res):
-                for sidx, o in enumerate(r.outputs):
-                    s = Sample(pidx, sidx, prompts[pidx])
-                    samples.append(s)
-                    first.append((s, o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
-            pool = ThreadPoolExecutor(max_workers=args.exec_workers)
-            splice_round(first, cond, args, pool)
-            run_tool_loop(generate, tokenize_len, samples, cond, args, pool)
-            pool.shutdown(wait=True)
-        gen_s = time.time() - t1
-        recs = [to_record(s, items[s.pidx], cond, template, args.model, args.tag, grade) for s in samples]
+            return samples
+        res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
+        first = []
+        for (pidx, _), prompt, r in zip(part, prompts, res):
+            for sidx, o in enumerate(r.outputs):
+                s = Sample(pidx, sidx, prompt)
+                samples.append(s)
+                first.append((s, o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
+        pool = ThreadPoolExecutor(max_workers=args.exec_workers)
+        splice_round(first, cond, args, pool)
+        run_tool_loop(generate, tokenize_len, samples, cond, args, pool)
+        pool.shutdown(wait=True)
+        return samples
+
+    order = {it["id"]: i for i, it in enumerate(items)}
+    for cond, template in todo:
+        t1 = time.time()
         path = out_path(cond, template)
-        with open(path, "w") as f:
-            for r in recs:
-                f.write(json.dumps(r) + "\n")
+        if args.overwrite:
+            partial_path(path).unlink(missing_ok=True)
+        kept, _ = read_partial(path, args.n)
+        kept = [r for r in kept if r["problem_id"] in order]
+        done_ids = {r["problem_id"] for r in kept}
+        chunks = plan_chunks(items, done_ids, args.chunk)
+        print(f"== {args.tag} / {cond} / {template}: {len(items)} problems x {args.n} samples"
+              + (f"; resuming, {len(done_ids)} problems already on disk" if done_ids else "")
+              + f"; {len(chunks)} chunk(s) to run", flush=True)
+        new_recs = []
+        for ci, part in enumerate(chunks, 1):
+            tc = time.time()
+            samples = run_arm(part, cond, template)
+            recs = [to_record(s, items[s.pidx], cond, template, args.model, args.tag, grade) for s in samples]
+            write_jsonl(partial_path(path), recs)
+            new_recs += recs
+            print(f"   chunk {ci}/{len(chunks)}: {len(part)} problems, pass@1="
+                  f"{sum(r['correct'] for r in recs) / max(1, len(recs)):.3f}, "
+                  f"{(time.time() - tc) / 60:.1f} min, checkpointed", flush=True)
+        gen_s = time.time() - t1
+        recs = kept + new_recs
+        recs.sort(key=lambda r: (order[r["problem_id"]], r["sample_idx"]))
+        write_jsonl_atomic(path, recs)
         acc = sum(r["correct"] for r in recs) / max(1, len(recs))
         meta = dict(vars(args), condition=cond, template=template, dtype=dtype, grader=grader_name,
-                    n_problems=len(items), n_records=len(recs), pass1=acc, gen_seconds=gen_s,
-                    total_gen_tokens=sum(r["gen_tokens"] for r in recs))
-        path.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
+                    n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids), pass1=acc,
+                    gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs))
+        meta_path(path).write_text(json.dumps(meta, indent=1))
+        partial_path(path).unlink(missing_ok=True)
         print(f"   pass@1={acc:.3f}  truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
               f"tokens={meta['total_gen_tokens'] / 1e6:.2f}M  {gen_s / 60:.1f} min -> {path}", flush=True)
 
