@@ -218,10 +218,15 @@ config), then re-run the model cell that was going. Finished arms and finished
 chunks are never redone unless `OVERWRITE = True`. The three cells can run in any
 order, one at a time (one GPU). Each one ends with a quick pass@1 table read back
 from Drive. The first run of each model spends a few minutes downloading weights.
+
+`samples` in that table is rows, which is problems x `N_SAMPLES`. If it is a
+multiple of what you expect, a file from an older run with a different prompt
+template sits in the same folder and loads as the same arm. `status` flags this;
+`move_stale()` moves such files into `old/`.
 """
 
 RUN_SETUP = r"""
-import json, os, subprocess, sys, time, importlib
+import json, os, shutil, subprocess, sys, time, importlib
 from pathlib import Path
 sys.path.insert(0, "src")
 
@@ -247,6 +252,58 @@ def partial_problems(partial):
     return len(pids)
 
 
+DATA_SUFFIXES = (".jsonl", ".meta.json", ".jsonl.partial", ".jsonl.tmp")
+
+
+def expected_stems():
+    return {jsonl.stem for tag in PRESETS[PRESET]["models"] for _, jsonl, _, _ in arm_files(tag)}
+
+
+def stale_files():
+    # Data files in the run folder that the current config does not produce (an older template or
+    # model), plus arms written by an older gen.py (no "chunk" key in meta). They inflate the
+    # tables (two files load as one arm) and block regeneration (gen.py sees the arm as done).
+    out = Path(OUT) / DATASET
+    exp = expected_stems()
+    stale = []
+    for f in sorted(out.iterdir()) if out.is_dir() else []:
+        if not f.is_file() or not f.name.endswith(DATA_SUFFIXES):
+            continue
+        stem = f.name.split(".")[0]
+        if stem not in exp:
+            stale.append((f, "not an arm of the current config"))
+        elif f.name.endswith(".meta.json") and "chunk" not in json.load(open(f)):
+            stale.append((f, "written by an older notebook version"))
+            stale.append((out / f"{stem}.jsonl", "written by an older notebook version"))
+    return stale
+
+
+def move_stale():
+    # Quarantine stale files into <run>/<dataset>/old/ (nothing is deleted).
+    out = Path(OUT) / DATASET
+    stale = stale_files()
+    if not stale:
+        print("nothing stale in", out); return
+    (out / "old").mkdir(exist_ok=True)
+    for f, why in stale:
+        if f.exists():
+            shutil.move(str(f), str(out / "old" / f.name))
+            print(f"moved {f.name} -> old/   ({why})")
+
+
+def load_run():
+    # Results of the current config only; files from other runs in the folder are reported and ignored.
+    import analyze as an
+    importlib.reload(an)
+    df = an.load_results(f"{OUT}/{DATASET}")
+    exp = {f"{stem}.jsonl" for stem in expected_stems()}
+    stray = sorted(set(df.file) - exp)
+    if stray:
+        print("ignoring", len(stray), "file(s) not in the current config:", ", ".join(stray))
+        print("run move_stale() to quarantine them")
+    return df[df.file.isin(exp)].copy()
+
+
 def status(tag):
     # What Drive holds for this model. Returns how many arms still need generation.
     missing = 0
@@ -256,6 +313,8 @@ def status(tag):
             note = f"done     pass@1={m['pass1']:.3f}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
             if m["n"] != N_SAMPLES or (N_PROBLEMS and m["n_problems"] != N_PROBLEMS):
                 note += "   <- written with a different N_SAMPLES/N_PROBLEMS; set OVERWRITE=True or change RUN_NAME"
+            if "chunk" not in m:
+                note += "   <- older notebook version; run move_stale(), then re-run this cell"
         elif partial.exists():
             note = f"partial  {partial_problems(partial)} problems checkpointed, will resume"
             missing += 1
@@ -263,14 +322,16 @@ def status(tag):
             note = "missing"
             missing += 1
         print(f"  {tag:8s} {cond:11s} {note}")
+    n_stale = len({f for f, _ in stale_files()})
+    if n_stale:
+        print(f"  ! {n_stale} stale file(s) from another run in this folder: run move_stale() first")
     return missing
 
 
 def show(tag):
     import analyze as an
-    importlib.reload(an)
     try:
-        df = an.load_results(f"{OUT}/{DATASET}")
+        df = load_run()
     except FileNotFoundError:
         print("no results yet"); return
     d = df[df.tag == tag]
@@ -378,7 +439,7 @@ importlib.reload(an)
 import pandas as pd
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 
-df = an.load_results(f"{OUT}/{DATASET}")
+df = load_run()   # current config's files only; strays from older runs are listed and skipped
 print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
 an.summary(df)
 """

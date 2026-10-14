@@ -102,6 +102,41 @@ def test_arm_files_match_gen_naming_and_status_reads_meta():
         assert "different N_SAMPLES" in buf.getvalue()
 
 
+def test_stale_files_are_flagged_quarantined_and_excluded():
+    import gen
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "run"
+        folder = out / "math500"; folder.mkdir(parents=True)
+        ns = run_setup_namespace(out, n=2)
+        rec = lambda tag, cond, pid, sidx: dict(tag=tag, condition=cond, problem_id=pid, sample_idx=sidx,  # noqa: E731
+                                                correct=1, truncated=False, n_calls=0, n_denied=0)
+        cur = folder / "base__prompt_off__qwen_math_nocode.jsonl"
+        gen.write_jsonl_atomic(cur, [rec("base", "prompt_off", "p0", 0), rec("base", "prompt_off", "p0", 1)])
+        gen.meta_path(cur).write_text(json.dumps(dict(pass1=1.0, n=2, n_problems=1, gen_seconds=1, chunk=100)))
+        old = folder / "base__prompt_off__qwen_math_cot.jsonl"  # last week's run, other template
+        gen.write_jsonl_atomic(old, [rec("base", "prompt_off", "p0", 0), rec("base", "prompt_off", "p0", 1)])
+        gen.meta_path(old).write_text(json.dumps(dict(pass1=0.5, n=2, n_problems=1, gen_seconds=1)))
+        oldv = folder / "base__tool_on__qwen_math_tir.jsonl"    # same name as now, older gen.py
+        gen.write_jsonl_atomic(oldv, [rec("base", "tool_on", "p0", 0), rec("base", "tool_on", "p0", 1)])
+        gen.meta_path(oldv).write_text(json.dumps(dict(pass1=0.5, n=2, n_problems=1, gen_seconds=1)))
+        (folder / "passk.png").write_bytes(b"x")
+
+        stale = {f.name for f, _ in ns["stale_files"]()}
+        assert stale == {old.name, gen.meta_path(old).name, oldv.name, gen.meta_path(oldv).name}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            df = ns["load_run"]()
+            ns["status"]("base")
+        assert len(df) == 2 and set(df.file) == {cur.name}           # the duplicate arm is excluded
+        assert "ignoring 2 file(s)" in buf.getvalue() and "stale file(s)" in buf.getvalue()
+        assert "older notebook version" in buf.getvalue()
+        with contextlib.redirect_stdout(buf):
+            ns["move_stale"]()
+        assert sorted(p.name for p in (folder / "old").iterdir()) == sorted(stale)
+        assert cur.exists() and (folder / "passk.png").exists() and not ns["stale_files"]()
+        with contextlib.redirect_stdout(buf):
+            assert ns["status"]("base") == 2  # tool_on is now missing, so it will be regenerated
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
