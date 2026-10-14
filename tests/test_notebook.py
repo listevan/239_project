@@ -30,7 +30,7 @@ def run_setup_namespace(out, conditions=("prompt_off", "env_denied", "tool_on"),
         PRESET="t", OUT=str(out), DATASET="math500", CONDITIONS=list(conditions),
         SHARED_TEMPLATE="qwen_math_nocode", N_SAMPLES=n, N_PROBLEMS=n_problems, OVERWRITE=False,
         MAX_TOKENS=64, MAX_MODEL_LEN=4096, TEMPERATURE=0.6, TOP_P=0.95, SEED=0, MAX_CALLS=4,
-        GPU_MEM=0.9, CHUNK=2, ALLOW_LONG=False, DENIAL_TEXT=None,
+        GPU_MEM=0.9, CHUNK=2, ALLOW_LONG=False, DENIAL_TEXT=None, GRADE_ON_COLAB=False,
     )
     exec(compile(notebook_cell("def stream(cmd)"), "run_setup_cell", "exec"), ns)
     return ns
@@ -136,6 +136,29 @@ def test_stale_files_are_flagged_quarantined_and_excluded():
         assert cur.exists() and (folder / "passk.png").exists() and not ns["stale_files"]()
         with contextlib.redirect_stdout(buf):
             assert ns["status"]("base") == 2  # tool_on is now missing, so it will be regenerated
+
+def test_status_and_show_handle_ungraded_rows():
+    import gen
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "run"; folder = out / "math500"; folder.mkdir(parents=True)
+        ns = run_setup_namespace(out, n=2)
+        rows = ns["arm_files"]("base")
+        rec = lambda pid, k: dict(tag="base", condition="prompt_off", problem_id=pid, sample_idx=k, correct=None,  # noqa: E731
+                                  truncated=False, n_calls=0, n_denied=0)
+        gen.write_jsonl_atomic(rows[0][1], [rec("p0", 0), rec("p0", 1)])
+        rows[0][2].write_text(json.dumps(dict(pass1=None, graded=False, n=2, n_problems=1, gen_seconds=30, chunk=100)))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert ns["status"]("base") == 2
+            ns["show"]("base")
+        txt = buf.getvalue()
+        assert "done     ungraded" in txt and "rows are ungraded" in txt
+        assert "pass1" not in txt.split("rows are ungraded")[1]
+        try:
+            ns["load_run"](require_graded=True)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "grade.py" in str(e)
 
 if __name__ == "__main__":
     fails = 0

@@ -134,6 +134,40 @@ def test_overwrite_discards_partial_and_redoes():
         assert "1 chunk(s) to run" in buf.getvalue() and [len(c) for c in FakeLLM.calls] == [5]
 
 
+def test_no_grade_then_local_grade():
+    install_stubs()
+    import grade as gr
+    import analyze as an
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.crash_on_call = [], None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off", "--n", str(N),
+                      "--chunk", "2", "--max-tokens", "64", "--out", str(out), "--no-grade"])
+        log = buf.getvalue()
+        assert "grade with src/grade.py" in log and "ungraded" in log and "writing 4 records" in log
+        arm = out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl"
+        assert all(r["correct"] is None and r["arith_n"] is None for r in records(arm))
+        meta = json.load(open(gen.meta_path(arm)))
+        assert meta["graded"] is False and meta["pass1"] is None
+        try:
+            an.load_results(out / "math500")
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "grade.py" in str(e)
+        assert len(an.load_results(out / "math500", allow_ungraded=True)) == 10
+        gr._GRADER = None  # serial path, stubbed grader
+        with contextlib.redirect_stdout(buf):
+            rows = gr.grade_dir(out / "math500", workers=0, timeout=5)
+        assert rows[0]["graded_now"] == 10 and rows[0]["pass1"] == 1.0
+        assert all(r["correct"] is True and r["arith_n"] == 0 for r in records(arm))
+        meta = json.load(open(gen.meta_path(arm)))
+        assert meta["graded"] is True and meta["pass1"] == 1.0 and meta["grader"] == "stub"
+        with contextlib.redirect_stdout(buf):
+            assert gr.grade_dir(out / "math500", workers=0)[0]["graded_now"] == 0  # idempotent
+        assert an.load_results(out / "math500")["correct"].dtype == bool
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

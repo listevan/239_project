@@ -24,11 +24,29 @@ The full plan is in `docs/experiment1_plan.md`.
 2. Runtime: pick a GPU. A100 runs every preset; L4 is fine for 1.5B; T4 only 1.5B.
 3. Run top to bottom with `SMOKE = True` (about 5 minutes). Results land in
    `MyDrive/239_project/results/<preset>-smoke/<dataset>/`.
-4. Set `SMOKE = False` and re-run the config, run, and analysis cells. There is
-   one run cell per checkpoint. Each cell first looks at Drive: finished arms are
-   loaded, not regenerated; an arm that was interrupted resumes from its last
+4. Set `SMOKE = False` and re-run the config and run cells. There is one run
+   cell per checkpoint. Each cell first looks at Drive: finished arms are loaded,
+   not regenerated; an arm that was interrupted resumes from its last
    checkpointed chunk (`CHUNK` problems, default 100). After a disconnect, re-run
    the cell that was going.
+5. Colab only generates (`GRADE_ON_COLAB = False`). Grade and analyze on your
+   laptop, see below.
+
+## Grade and analyze locally
+
+Trajectories reach the laptop through Google Drive for desktop (the Drive folder
+`239_project/results` appears under `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/`,
+mark it "available offline") or through the zip cell at the bottom of the notebook.
+
+```
+python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
+.venv/bin/python src/grade.py  "<results>/math-1.5b/math500"    # fills `correct` in place, skips graded rows
+.venv/bin/python src/report.py "<results>/math-1.5b/math500"    # tables, verdicts, passk_by_model.png, passk_main.png
+```
+
+`grade.py` runs math-verify in worker processes with a per-row timeout and reports
+the slowest rows. In a notebook, `import analyze as an` gives `an.load_results`,
+`an.summary`, `an.passk_table`, `an.verdict` and `an.plot(df, ["model condition", ...])`.
 
 Rough A100 cost at MATH-500 x 16 samples for the nine-arm grid: 1.5B about two
 hours, 7B five to seven hours.

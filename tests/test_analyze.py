@@ -111,6 +111,20 @@ def test_plot_accepts_strings_tuples_lists_and_dicts():
     except ValueError:
         pass
 
+def test_load_results_ungraded_guard():
+    with tempfile.TemporaryDirectory() as d:
+        recs = synth(n_problems=2, n=2).drop(columns=["arm", "file"]).to_dict("records")
+        recs[0]["correct"] = None
+        with open(Path(d) / "x.jsonl", "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        try:
+            an.load_results(d)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "grade.py" in str(e)
+        assert an.load_results(d, allow_ungraded=True)["correct"].isna().sum() == 1
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

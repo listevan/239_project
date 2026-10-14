@@ -46,9 +46,11 @@ control. This notebook adds the control and a direct skill metric.
 
 **What runs.** `src/gen.py` samples one checkpoint under each condition with vLLM
 and writes one JSONL per (model, condition) to Google Drive, checkpointing every
-`CHUNK` problems, so a disconnect costs at most one chunk. `src/analyze.py` turns the JSONL into pass@k curves,
-bootstrap CIs, and a verdict. Every model gets the same grid, so each condition is
-read as its own three-way comparison.
+`CHUNK` problems, so a disconnect costs at most one chunk. Colab does GPU work
+only: grading (math-verify) and the arithmetic check run on your laptop with
+`src/grade.py`, and `src/report.py` makes the tables and figures
+(`GRADE_ON_COLAB = True` grades here instead). Every model gets the same grid, so
+each condition is read as its own three-way comparison.
 
 | Condition | Prompt | If the model writes a code block |
 |---|---|---|
@@ -194,6 +196,7 @@ DENIAL_TEXT = None         # None = "No interpreter is available; the code was n
 GPU_MEM = 0.90
 CHUNK = 100                # problems per checkpoint; a disconnect loses at most this much work
 OVERWRITE = False          # True regenerates arms that are already on Drive
+GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 CONDITIONS = ["prompt_off", "env_denied", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
 RUN_NAME = f"{PRESET}{'-smoke' if SMOKE else ''}"
@@ -291,11 +294,12 @@ def move_stale():
             print(f"moved {f.name} -> old/   ({why})")
 
 
-def load_run():
+def load_run(require_graded=False):
     # Results of the current config only; files from other runs in the folder are reported and ignored.
+    # require_graded raises with instructions if rows still wait for src/grade.py.
     import analyze as an
     importlib.reload(an)
-    df = an.load_results(f"{OUT}/{DATASET}")
+    df = an.load_results(f"{OUT}/{DATASET}", allow_ungraded=not require_graded)
     exp = {f"{stem}.jsonl" for stem in expected_stems()}
     stale = {f.name for f, _ in stale_files()}
     stray = sorted((set(df.file) - exp) | (set(df.file) & stale))
@@ -311,7 +315,8 @@ def status(tag):
     for cond, jsonl, meta, partial in arm_files(tag):
         if meta.exists():
             m = json.load(open(meta))
-            note = f"done     pass@1={m['pass1']:.3f}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
+            acc = "ungraded" if m.get("pass1") is None else f"pass@1={m['pass1']:.3f}"
+            note = f"done     {acc}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
             if m["n"] != N_SAMPLES or (N_PROBLEMS and m["n_problems"] != N_PROBLEMS):
                 note += "   <- written with a different N_SAMPLES/N_PROBLEMS; set OVERWRITE=True or change RUN_NAME"
             if "chunk" not in m:
@@ -338,9 +343,16 @@ def show(tag):
     d = df[df.tag == tag]
     if d.empty:
         print(f"no finished arms for {tag} yet"); return
-    tbl = d.groupby("condition").agg(samples=("correct", "size"), problems=("problem_id", "nunique"),
-                                      pass1=("correct", "mean"), trunc=("truncated", "mean"),
-                                      calls=("n_calls", "mean"), denied=("n_denied", "mean")).round(3)
+    graded = d["correct"].notna().all()
+    if not graded:
+        print("rows are ungraded: pass@1 appears after  python src/grade.py <this folder>  on your laptop")
+    aggs = dict(samples=("correct", "size"), problems=("problem_id", "nunique"), trunc=("truncated", "mean"),
+                calls=("n_calls", "mean"), denied=("n_denied", "mean"))
+    if graded:
+        d = d.assign(correct=d["correct"].astype(float))
+        aggs = dict(samples=aggs["samples"], problems=aggs["problems"], pass1=("correct", "mean"),
+                    **{k: v for k, v in aggs.items() if k not in ("samples", "problems")})
+    tbl = d.groupby("condition").agg(**aggs).round(3)
     tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index])
     try:
         display(tbl)
@@ -397,6 +409,8 @@ def run_model(tag):
             cmd.append("--allow-long")
         if OVERWRITE:
             cmd.append("--overwrite")
+        if not GRADE_ON_COLAB:
+            cmd.append("--no-grade")
         if DENIAL_TEXT:
             cmd += ["--denial-text", DENIAL_TEXT]
         print("\n$", " ".join(cmd), flush=True)
@@ -424,6 +438,25 @@ run_model("tool_rl")
 ANALYZE_MD = r"""
 ## 6. Analyze
 
+With `GRADE_ON_COLAB = False` (the default) the rows on Drive are ungraded and the
+cells below stop with a message. Grade and analyze on your laptop instead:
+
+```
+cd ~/projects/239_project
+python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
+.venv/bin/python src/grade.py  "<results>/math-1.5b-smoke/math500"
+.venv/bin/python src/report.py "<results>/math-1.5b-smoke/math500"
+```
+
+where `<results>` is the synced Drive folder (Google Drive for desktop:
+`~/Library/CloudStorage/GoogleDrive-<account>/My Drive/239_project/results`) or
+the unzipped download from the last cell. `grade.py` fills `correct` in place and
+skips rows already graded; `report.py` prints the tables and saves the two figures
+next to the data. The same functions are available in a local notebook via
+`import analyze as an` (`an.load_results`, `an.summary`, `an.plot`).
+
+With `GRADE_ON_COLAB = True` everything below runs here.
+
 `summary` is the headline table, one row per arm. `trunc_pct`, `no_boxed_pct`,
 `code_pct` and `fake_out_pct` are the failure modes that would make a pass@k gap
 uninterpretable, so read them before the curves. Under `prompt_off`, `calls_mean`
@@ -445,7 +478,7 @@ importlib.reload(an)
 import pandas as pd
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 
-df = load_run()   # current config's files only; strays from older runs are listed and skipped
+df = load_run(require_graded=True)   # current config's files only; strays from older runs are listed and skipped
 print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
 an.summary(df)
 """
@@ -516,9 +549,9 @@ the table.
 """
 
 DOWNLOAD = r"""
-# Pull the trajectories to your laptop: every JSONL row carries the full generation
-# text plus call / denial / truncation counts. Uncomment, run, then unzip locally and
-# point analyze.load_results() at the <run>/<dataset> folder.
+# Without Google Drive for desktop: pull the run to your laptop as a zip. Every JSONL row
+# carries the full generation text plus call / denial / truncation counts. Uncomment, run,
+# unzip locally, then  python src/grade.py <run>/<dataset>  and  python src/report.py <run>/<dataset>.
 #
 # from google.colab import files
 # import shutil

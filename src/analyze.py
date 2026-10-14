@@ -33,7 +33,9 @@ MAIN_ARMS = [("tool_rl", "prompt_off"),
              ("base", "prompt_off"), ("base", "tool_on")]
 
 
-def load_results(results_dir) -> pd.DataFrame:
+def load_results(results_dir, allow_ungraded=False) -> pd.DataFrame:
+    """Every *.jsonl in the folder as one DataFrame. Raises if any record is still ungraded
+    (gen.py --no-grade) unless allow_ungraded, since pass@k would silently be wrong."""
     paths = sorted(Path(results_dir).glob("*.jsonl"))
     if not paths:
         raise FileNotFoundError(f"no .jsonl under {results_dir}")
@@ -45,6 +47,12 @@ def load_results(results_dir) -> pd.DataFrame:
         frames.append(f)
     df = pd.concat(frames, ignore_index=True)
     df["arm"] = df["tag"] + " / " + df["condition"]
+    n_un = int(df["correct"].isna().sum()) if "correct" in df else len(df)
+    if n_un and not allow_ungraded:
+        raise ValueError(f"{n_un} of {len(df)} records in {results_dir} are ungraded: "
+                         f"run  python src/grade.py {results_dir}  first")
+    if not n_un:
+        df["correct"] = df["correct"].astype(bool)
     return df
 
 

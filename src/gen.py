@@ -301,15 +301,20 @@ def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
 
 
 # --------------------------------------------------------------------------- records
-def to_record(s: Sample, item, cond, template, model, tag, grade):
+def to_record(s: Sample, item, cond, template, model, tag, grade=None):
+    """One JSONL row. With grade=None (gen.py --no-grade) `correct`, `arith_n` and `arith_wrong` are
+    left null for src/grade.py to fill on another machine; everything else is generation-time data."""
     text = s.gen
     fake_outputs = max(0, text.count(STOP_OUTPUT) - s.n_injected)
-    prose = strip_fenced(text)
-    a_n, a_wrong, _ = arith_check.check(prose)
+    if grade is None:
+        correct = a_n = a_wrong = None
+    else:
+        correct = bool(grade(text, item["answer"]))
+        a_n, a_wrong, _ = arith_check.check(strip_fenced(text))
     return dict(
         model=model, tag=tag, condition=cond, template=template,
         problem_id=item["id"], subject=item.get("subject"), level=item.get("level"),
-        sample_idx=s.sidx, correct=bool(grade(text, item["answer"])), gold=item["answer"],
+        sample_idx=s.sidx, correct=correct, gold=item["answer"],
         boxed=last_boxed(text), boxed_present=last_boxed(text) is not None,
         truncated=s.truncated, finish=s.finish, gen_tokens=s.gen_tokens, rounds=s.rounds,
         code_emitted="```python" in text or "```py" in text, fake_outputs=fake_outputs,
@@ -350,6 +355,8 @@ def parse_args(argv=None):
     p.add_argument("--dtype", default="auto")
     p.add_argument("--out", required=True, help="results directory")
     p.add_argument("--overwrite", action="store_true", help="redo finished arms and discard partial files")
+    p.add_argument("--no-grade", action="store_true",
+                   help="write raw trajectories only (correct/arith fields null); grade later with src/grade.py")
     p.add_argument("--chunk", type=int, default=100,
                    help="problems per checkpoint; records are appended to <arm>.jsonl.partial after each "
                         "chunk and a restart resumes from there (0 = whole arm in one go)")
@@ -451,12 +458,18 @@ def main(argv=None):
     print(f"gen.py starting: {args.tag} {args.model}; todo={todo}", flush=True)
     print(f"loading {args.dataset} from the HF hub...", flush=True)
     items = load_problems(args.dataset, args.n_problems, args.seed)
-    print("loading grader (math_verify)...", flush=True)
-    grade, grader_name = make_grader()
+    if args.no_grade:
+        grade, grader_name = None, "none (grade with src/grade.py)"
+    else:
+        print("loading grader (math_verify)...", flush=True)
+        grade, grader_name = make_grader()
     print(f"{len(items)} problems from {args.dataset}; grader={grader_name}", flush=True)
     print("importing torch + vllm (first time: a minute or two)...", flush=True)
 
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    # The FlashInfer sampler JIT-builds a kernel on first use (about two minutes on a fresh Colab
+    # runtime, every time, since the cache dies with the VM). The torch sampler needs no build.
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     if args.allow_long:
         os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
     import torch  # type: ignore
@@ -537,23 +550,36 @@ def main(argv=None):
         for ci, part in enumerate(chunks, 1):
             tc = time.time()
             samples = run_arm(part, cond, template)
-            recs = [to_record(s, items[s.pidx], cond, template, args.model, args.tag, grade) for s in samples]
+            tg = time.time()
+            if grade is not None:
+                print(f"   grading {len(samples)} samples (math_verify, serial)...", flush=True)
+            recs = []
+            for i, smp in enumerate(samples, 1):
+                recs.append(to_record(smp, items[smp.pidx], cond, template, args.model, args.tag, grade))
+                if grade is not None and i % 40 == 0:
+                    print(f"   graded {i}/{len(samples)}, {time.time() - tg:.0f}s", flush=True)
+            print(f"   writing {len(recs)} records to {partial_path(path).name}...", flush=True)
+            tw = time.time()
             write_jsonl(partial_path(path), recs)
             new_recs += recs
-            print(f"   chunk {ci}/{len(chunks)}: {len(part)} problems, pass@1="
-                  f"{sum(r['correct'] for r in recs) / max(1, len(recs)):.3f}, "
-                  f"{(time.time() - tc) / 60:.1f} min, checkpointed", flush=True)
+            acc_txt = (f"pass@1={sum(r['correct'] for r in recs) / max(1, len(recs)):.3f}" if grade is not None
+                       else "ungraded")
+            print(f"   chunk {ci}/{len(chunks)}: {len(part)} problems, {acc_txt}, "
+                  f"{(time.time() - tc) / 60:.1f} min (write {time.time() - tw:.0f}s), checkpointed", flush=True)
         gen_s = time.time() - t1
         recs = kept + new_recs
         recs.sort(key=lambda r: (order[r["problem_id"]], r["sample_idx"]))
+        print(f"   writing {path.name} + meta...", flush=True)
         write_jsonl_atomic(path, recs)
-        acc = sum(r["correct"] for r in recs) / max(1, len(recs))
+        graded = [r["correct"] for r in recs if r.get("correct") is not None]
+        acc = sum(graded) / len(graded) if graded and len(graded) == len(recs) else None
         meta = dict(vars(args), condition=cond, template=template, dtype=dtype, grader=grader_name,
-                    n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids), pass1=acc,
-                    gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs))
+                    graded=acc is not None, n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
+                    pass1=acc, gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs))
         meta_path(path).write_text(json.dumps(meta, indent=1))
         partial_path(path).unlink(missing_ok=True)
-        print(f"   pass@1={acc:.3f}  truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
+        print(f"   {'pass@1=%.3f' % acc if acc is not None else 'ungraded'}  "
+              f"truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
               f"tokens={meta['total_gen_tokens'] / 1e6:.2f}M  {gen_s / 60:.1f} min -> {path}", flush=True)
 
 

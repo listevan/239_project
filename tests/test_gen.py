@@ -189,6 +189,12 @@ def test_partial_resume_roundtrip():
         assert gen.meta_path(path).name == "base__env_denied__qwen_math_tir.meta.json"
         assert not gen.partial_path(path).name.endswith(".jsonl")  # analyze.load_results globs *.jsonl
 
+def test_to_record_ungraded():
+    s = gen.Sample(0, 1, "p"); s.gen = r"so 2 + 2 = 5 and \boxed{156}"; s.done = True
+    rec = gen.to_record(s, dict(id="x", answer="156"), "prompt_off", "qwen_math_cot", "m", "base")
+    assert rec["correct"] is None and rec["arith_n"] is None and rec["arith_wrong"] is None
+    assert rec["boxed"] == "156" and rec["boxed_present"] and rec["gold"] == "156" and rec["text"] == s.gen
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
