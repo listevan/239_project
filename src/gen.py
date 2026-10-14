@@ -254,6 +254,10 @@ def splice_round(pending, cond, args, pool):
             code = last_code_block(text)
             if code is not None:
                 futures[id(s)] = pool.submit(execute, code, args.exec_timeout, args.max_output_chars)
+    t0 = time.time()
+    if futures:
+        print(f"  executing {len(futures)} code blocks ({args.exec_workers} workers, "
+              f"{args.exec_timeout:.0f}s timeout each)...", flush=True)
     for s, text, ntok, fin, stop in pending:
         fut = futures.get(id(s))
         if fut is not None:
@@ -262,12 +266,17 @@ def splice_round(pending, cond, args, pool):
             ex = lambda code: execute(code, args.exec_timeout, args.max_output_chars)  # noqa: E731
         advance(s, text, ntok, fin, stop, cond, args.max_calls, executor=ex,
                 denial=getattr(args, "denial_text", None))
+    if futures:
+        n_err = sum(1 for s, *_ in pending if id(s) in futures and futures[id(s)].result()[1])
+        print(f"  executed in {time.time() - t0:.0f}s, {n_err} errored or timed out", flush=True)
 
 
 def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
     """Rounds 2..N. generate(prompts, stops, budgets, seeds) -> [(text, n_tokens, finish, stop_reason)]."""
     max_rounds = 2 * args.max_calls + 6
+    rnd, t0 = 1, time.time()
     while True:
+        rnd += 1
         keep, budgets = [], []
         for s in samples:
             if s.done:
@@ -283,7 +292,9 @@ def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
             break
         final = any(s.rounds >= max_rounds for s in keep)
         stops = TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)
-        print(f"  round: {len(keep)} active, final={final}", flush=True)
+        print(f"  round {rnd}: {len(keep)} of {len(samples)} samples still generating"
+              f"{' (final round, no more tool stops)' if final else ''}, {time.time() - t0:.0f}s into the loop",
+              flush=True)
         seeds = [(args.seed * 1_000_003 + s.pidx * 4096 + s.sidx * 64 + s.rounds) % (2 ** 31) for s in keep]
         outs = generate([s.context for s in keep], stops, budgets, seeds)
         splice_round([(s,) + tuple(o) for s, o in zip(keep, outs)], cond, args, pool)
@@ -475,7 +486,7 @@ def main(argv=None):
 
     def generate(prompts, stops, budgets, seeds):
         params = [sp(1, b, stops, seed) for b, seed in zip(budgets, seeds)]
-        res = llm.generate(prompts, params, use_tqdm=False)
+        res = llm.generate(prompts, params, use_tqdm=True)
         outs = []
         for r in res:
             o = r.outputs[0]
