@@ -297,11 +297,12 @@ def load_run():
     importlib.reload(an)
     df = an.load_results(f"{OUT}/{DATASET}")
     exp = {f"{stem}.jsonl" for stem in expected_stems()}
-    stray = sorted(set(df.file) - exp)
+    stale = {f.name for f, _ in stale_files()}
+    stray = sorted((set(df.file) - exp) | (set(df.file) & stale))
     if stray:
-        print("ignoring", len(stray), "file(s) not in the current config:", ", ".join(stray))
+        print("ignoring", len(stray), "file(s) from another run or notebook version:", ", ".join(stray))
         print("run move_stale() to quarantine them")
-    return df[df.file.isin(exp)].copy()
+    return df[~df.file.isin(stray)].copy()
 
 
 def status(tag):
