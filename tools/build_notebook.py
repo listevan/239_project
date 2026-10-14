@@ -443,8 +443,8 @@ cells below stop with a message. Grade and analyze on your laptop instead:
 
 ```
 cd ~/projects/239_project
-python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
-.venv/bin/python src/report.py --run math-1.5b-smoke --dataset math500
+uv sync                                                        # once
+uv run src/report.py --run math-1.5b-smoke --dataset math500
 ```
 
 `report.py --run` finds the run under Google Drive for desktop
@@ -484,7 +484,7 @@ if GRADE_ON_COLAB:
 else:
     df = None
     print("Generation done. Rows are ungraded here (GRADE_ON_COLAB = False). On your laptop:\n"
-          f"  cd ~/projects/239_project && .venv/bin/python src/report.py --run {RUN_NAME} --dataset {DATASET}")
+          f"  cd ~/projects/239_project && uv run src/report.py --run {RUN_NAME} --dataset {DATASET}")
 """
 
 PLOT = r"""

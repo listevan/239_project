@@ -39,8 +39,8 @@ Trajectories reach the laptop through Google Drive for desktop (the Drive folder
 mark it "available offline") or through the zip cell at the bottom of the notebook.
 
 ```
-python3 -m venv .venv && .venv/bin/pip install -r requirements-local.txt   # once
-.venv/bin/python src/report.py --run math-1.5b --dataset math500            # grade + tables + figures
+uv sync                                                  # once: .venv from pyproject.toml (uv.lock pins it)
+uv run src/report.py --run math-1.5b --dataset math500   # grade + tables + figures
 ```
 
 `report.py --run` finds the folder under the synced Drive (or `$RESULTS_ROOT`, or

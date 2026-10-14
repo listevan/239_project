@@ -1,0 +1,18 @@
+[project]
+name = "tool-atrophy-pilot"
+version = "0.1.0"
+description = "Does tool-RL erode the skill the tool replaces? vLLM sampling harness (Colab), grader and analysis (laptop)."
+requires-python = ">=3.11"
+dependencies = [
+    "math-verify>=0.8",
+    "numpy",
+    "pandas",
+    "matplotlib",
+]
+
+[dependency-groups]
+dev = ["nbformat"]                                     # tools/build_notebook.py
+gpu = ["vllm>=0.10", "datasets>=3.0", "hf_transfer"]   # generation; the Colab notebook installs these itself
+
+[tool.uv]
+package = false
