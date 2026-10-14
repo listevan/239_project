@@ -182,7 +182,7 @@ def execute(code: str, timeout: float = 10.0, max_chars: int = 2000):
         path.write_text(code)
         try:
             r = subprocess.run([sys.executable, "-I", str(path)], cwd=d, capture_output=True,
-                               text=True, timeout=timeout)
+                               stdin=subprocess.DEVNULL, text=True, timeout=timeout)
             out, err = r.stdout, r.returncode != 0
             if err:
                 tail = r.stderr.strip().splitlines()
