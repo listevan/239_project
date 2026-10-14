@@ -1,6 +1,6 @@
 # Paste into one Colab cell after the summary cell. Works with the analyze.py already in the
-# notebook (needs passk_table / ks_for / bootstrap_passk). Saves passk_by_model.png and passk_main.png.
-import sys, importlib
+# notebook. Defines plot(df, lines) and draws the two figures; edit the strings at the bottom.
+import sys
 sys.path.insert(0, "src")
 import analyze as an
 import matplotlib.pyplot as plt
@@ -8,20 +8,18 @@ import matplotlib.pyplot as plt
 df = load_run() if "load_run" in globals() else an.load_results(f"{OUT}/{DATASET}")
 
 COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "tool_on": "#eda100", "plain_cot": "#008300"}
-MAIN_ARMS = [("tool_rl", "prompt_off"),
-             ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
-             ("base", "prompt_off"), ("base", "tool_on")]
+ROLE_STYLE = {"base": "-", "text_rl": "--", "tool_rl": ":"}
+GRAY = "#52514e"
 
 
-def _format_axis(ax, n_max):
-    ks = an.ks_for(int(n_max))
-    ax.set_xscale("log", base=2); ax.set_xticks(ks); ax.set_xticklabels([str(k) for k in ks])
-    ax.set_xlabel("k (samples)"); ax.set_ylim(0, 1); ax.grid(True, color="#e6e5e1", lw=0.8)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
+def _arm(line):
+    if isinstance(line, str):
+        line = line.replace("/", " ").split()
+    tag, cond = line
+    return tag, cond
 
 
-def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci=True, iters=300):
+def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
     row = pk[(pk.tag == tag) & (pk.condition == cond)]
     if row.empty:
         return False
@@ -35,36 +33,57 @@ def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci=True, iters=300):
     return True
 
 
-def plot_passk_by_model(df, title=None):
+def plot(df, lines, title=None, color="model", ci=True, iters=300, save=None):
+    """lines: ["model condition", ...] for one panel, or {panel title: [lines]} for several.
+    color: "model" or "condition" (what the color means; the other sets line style when it varies)."""
+    panels = lines if isinstance(lines, dict) else {None: lines}
     pk = an.passk_table(df)
-    tags = [t for t in an.ROLE_ORDER if t in set(pk.tag)]
-    fig, axes = plt.subplots(1, len(tags), figsize=(4.6 * len(tags), 4.2), dpi=120, sharey=True, squeeze=False)
-    for ax, tag in zip(axes[0], tags):
-        for cond in [c for c in an.COND_ORDER if c in set(pk[pk.tag == tag].condition)]:
-            _draw_arm(ax, df, pk, tag, cond, COND_COLOR[cond], "-", cond)
-        _format_axis(ax, pk[pk.tag == tag]["n_samples"].max())
-        ax.set_title(tag, loc="left"); ax.legend(frameon=False, fontsize=8, loc="lower right")
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(7 if n == 1 else 4.6 * n, 4.4), dpi=120, sharey=True, squeeze=False)
+    missing = []
+    for ax, (name, arms) in zip(axes[0], panels.items()):
+        arms = [_arm(a) for a in arms]
+        vary_tag, vary_cond = len({t for t, _ in arms}) > 1, len({c for _, c in arms}) > 1
+        for tag, cond in arms:
+            if color == "condition":
+                col, style = COND_COLOR.get(cond, GRAY), (ROLE_STYLE.get(tag, "-") if vary_tag else "-")
+            else:
+                col, style = an.ROLE_COLOR.get(tag, GRAY), (an.COND_STYLE.get(cond, "-") if vary_cond else "-")
+            if not _draw_arm(ax, df, pk, tag, cond, col, style, f"{tag} {cond}", ci, iters):
+                missing.append(f"{tag} {cond}")
+        ks = an.ks_for(int(pk["n_samples"].max()))
+        ax.set_xscale("log", base=2); ax.set_xticks(ks); ax.set_xticklabels([str(k) for k in ks])
+        ax.set_xlabel("k (samples)"); ax.set_ylim(0, 1); ax.grid(True, color="#e6e5e1", lw=0.8)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        if name:
+            ax.set_title(name, loc="left")
+        if ax.get_lines():
+            ax.legend(frameon=False, fontsize=8, loc="lower right")
     axes[0][0].set_ylabel("pass@k")
-    fig.suptitle(title or f"pass@k within each model, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
-    fig.tight_layout()
-    return fig
-
-
-def plot_passk_main(df, arms=MAIN_ARMS, title=None):
-    pk = an.passk_table(df)
-    fig, ax = plt.subplots(figsize=(7, 4.8), dpi=120)
-    missing = [f"{t}/{c}" for t, c in arms
-               if not _draw_arm(ax, df, pk, t, c, an.ROLE_COLOR[t], an.COND_STYLE[c], f"{t} / {c}")]
+    if title:
+        axes[0][0].set_title(title, loc="left") if n == 1 else fig.suptitle(title, x=0.01, ha="left")
     if missing:
         print("not in results, skipped:", ", ".join(missing))
-    _format_axis(ax, pk["n_samples"].max())
-    ax.set_ylabel("pass@k"); ax.legend(frameon=False, fontsize=8, loc="lower right")
-    ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
     fig.tight_layout()
+    if save:
+        fig.savefig(save, bbox_inches="tight")
     return fig
 
 
-fig1 = plot_passk_by_model(df, title=f"{RUN_NAME} / {DATASET}: pass@k within each model")
-fig1.savefig(f"{OUT}/{DATASET}/passk_by_model.png", bbox_inches="tight")
-fig2 = plot_passk_main(df, title=f"{RUN_NAME} / {DATASET}: tool-RL with the tool off vs control and base")
-fig2.savefig(f"{OUT}/{DATASET}/passk_main.png", bbox_inches="tight")
+# ---- edit below: each line is "model condition"; models base / text_rl / tool_rl,
+# ---- conditions prompt_off / env_denied / tool_on
+
+# Figure 1: within each model, what does turning the tool off cost?
+fig1 = plot(df, {
+    "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
+    "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
+    "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
+}, color="condition", title=f"{RUN_NAME}: pass@k within each model", save=f"{OUT}/{DATASET}/passk_by_model.png")
+
+# Figure 2: tool-RL with the tool off, against the text-RL control and the base model
+fig2 = plot(df, [
+    "tool_rl prompt_off",
+    "text_rl prompt_off", "text_rl tool_on",
+    "base prompt_off",    "base tool_on",
+], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base", save=f"{OUT}/{DATASET}/passk_main.png")

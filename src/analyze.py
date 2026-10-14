@@ -4,8 +4,8 @@ Usage in a notebook:
     import analyze as an
     df = an.load_results("results/math-1.5b/math500")
     an.summary(df)                 # one row per (tag, condition)
-    an.plot_passk_by_model(df)     # one panel per model, conditions as lines (tool-off cost per model)
-    an.plot_passk_main(df)         # headline: chosen arms on one axis, color = model, style = condition
+    an.plot(df, ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off"])   # one panel
+    an.plot(df, {"base": ["base prompt_off", "base tool_on"], "tool_rl": [...]})    # one panel per key
     an.plot_passk(df)              # older view: one panel per condition, models as lines
     an.verdict(df)                 # atrophy / internalization / overlap readout
 """
@@ -25,6 +25,8 @@ COND_MARK = {"prompt_off": "o", "env_denied": "s", "tool_on": "^", "plain_cot": 
 # conditions get hues of their own (reference palette slots 7, 8, 4, 6, validated as a set) so a
 # per-model panel never reuses a model color
 COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "tool_on": "#eda100", "plain_cot": "#008300"}
+ROLE_STYLE = {"base": "-", "text_rl": "--", "tool_rl": ":"}
+GRAY = "#52514e"
 # default arms of the headline figure: tool-RL with the tool off against the control and the base
 MAIN_ARMS = [("tool_rl", "prompt_off"),
              ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
@@ -214,41 +216,78 @@ def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
     return True
 
 
-def plot_passk_by_model(df: pd.DataFrame, title=None, ci=True, iters=300):
-    """One panel per model, the conditions as lines: what turning the tool off costs each model."""
+def _arm(line):
+    """'tool_rl prompt_off', 'tool_rl/prompt_off' or ('tool_rl', 'prompt_off') -> ('tool_rl', 'prompt_off')."""
+    if isinstance(line, str):
+        parts = line.replace("/", " ").split()
+        if len(parts) != 2:
+            raise ValueError(f"line must be 'model condition', got {line!r}")
+        return parts[0], parts[1]
+    tag, cond = line
+    return tag, cond
+
+
+def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None):
+    """Draw pass@k curves.
+
+    lines  a list of "model condition" strings for one panel, or a dict {panel title: [lines]} for
+           several panels sharing the y axis. Models: base, text_rl, tool_rl. Conditions: prompt_off,
+           env_denied, tool_on, plain_cot. "tool_rl/prompt_off" and ("tool_rl", "prompt_off") also work.
+    color  "model" or "condition": what the color encodes. The other one sets the line style, but only
+           when it varies within a panel.
+    ci     shade a 95% bootstrap band over problems.
+    save   path of a PNG to write.
+    Lines whose arm is not in df are listed and skipped.
+    """
     import matplotlib.pyplot as plt
+    panels = lines if isinstance(lines, dict) else {None: lines}
+    pk = passk_table(df)
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(7 if n == 1 else 4.6 * n, 4.4), dpi=120, sharey=True, squeeze=False)
+    missing = []
+    for ax, (name, arms) in zip(axes[0], panels.items()):
+        arms = [_arm(a) for a in arms]
+        vary_tag, vary_cond = len({t for t, _ in arms}) > 1, len({c for _, c in arms}) > 1
+        for tag, cond in arms:
+            if color == "condition":
+                col = COND_COLOR.get(cond, GRAY)
+                style = ROLE_STYLE.get(tag, "-") if vary_tag else "-"
+            else:
+                col = ROLE_COLOR.get(tag, GRAY)
+                style = COND_STYLE.get(cond, "-") if vary_cond else "-"
+            if not _draw_arm(ax, df, pk, tag, cond, col, style, f"{tag} {cond}", ci, iters):
+                missing.append(f"{tag} {cond}")
+        _format_axis(ax, pk["n_samples"].max())
+        if name:
+            ax.set_title(name, loc="left")
+        if ax.get_lines():
+            ax.legend(frameon=False, fontsize=8, loc="lower right")
+    axes[0][0].set_ylabel("pass@k")
+    if title:
+        if n == 1:
+            axes[0][0].set_title(title, loc="left")
+        else:
+            fig.suptitle(title, x=0.01, ha="left")
+    if missing:
+        print("not in results, skipped:", ", ".join(missing))
+    fig.tight_layout()
+    if save:
+        fig.savefig(save, bbox_inches="tight")
+    return fig
+
+
+def plot_passk_by_model(df: pd.DataFrame, title=None, ci=True, iters=300):
+    """One panel per model, its conditions as lines. Same as plot(df, {model: [...]}, color="condition")."""
     pk = passk_table(df)
     tags = [t for t in ROLE_ORDER if t in set(pk.tag)] + sorted(set(pk.tag) - set(ROLE_ORDER))
-    fig, axes = plt.subplots(1, len(tags), figsize=(4.6 * len(tags), 4.2), dpi=120, sharey=True, squeeze=False)
-    for ax, tag in zip(axes[0], tags):
-        have = set(pk[pk.tag == tag].condition)
-        for cond in [c for c in COND_ORDER if c in have] + sorted(have - set(COND_ORDER)):
-            _draw_arm(ax, df, pk, tag, cond, COND_COLOR.get(cond, "#52514e"), "-", cond, ci, iters)
-        _format_axis(ax, pk[pk.tag == tag]["n_samples"].max())
-        ax.set_title(tag, loc="left")
-        ax.legend(frameon=False, fontsize=8, loc="lower right")
-    axes[0][0].set_ylabel("pass@k")
-    fig.suptitle(title or f"pass@k within each model, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
-    fig.tight_layout()
-    return fig
+    panels = {t: [f"{t} {c}" for c in COND_ORDER if c in set(pk[pk.tag == t].condition)] for t in tags}
+    return plot(df, panels, title=title or f"pass@k within each model, {df['problem_id'].nunique()} problems",
+                color="condition", ci=ci, iters=iters)
 
 
 def plot_passk_main(df: pd.DataFrame, arms=MAIN_ARMS, title=None, ci=True, iters=300):
-    """Headline figure: the given (tag, condition) arms on one axis. Color = model, line style = condition."""
-    import matplotlib.pyplot as plt
-    pk = passk_table(df)
-    fig, ax = plt.subplots(figsize=(7, 4.8), dpi=120)
-    missing = [f"{t}/{c}" for t, c in arms
-               if not _draw_arm(ax, df, pk, t, c, ROLE_COLOR.get(t, "#52514e"), COND_STYLE.get(c, "-"),
-                                f"{t} / {c}", ci, iters)]
-    if missing:
-        print("not in results, skipped:", ", ".join(missing))
-    _format_axis(ax, pk["n_samples"].max())
-    ax.set_ylabel("pass@k")
-    ax.legend(frameon=False, fontsize=8, loc="lower right")
-    ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
-    fig.tight_layout()
-    return fig
+    """The headline arms on one axis. Same as plot(df, [...])."""
+    return plot(df, list(arms), title=title or f"pass@k, {df['problem_id'].nunique()} problems", ci=ci, iters=iters)
 
 
 def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):

@@ -49,19 +49,19 @@ def test_plot_by_model_panels_and_lines():
     assert len(fig.axes) == 3
     assert [ax.get_title(loc="left") for ax in fig.axes] == ["base", "text_rl", "tool_rl"]
     assert all(len(ax.get_lines()) == 3 for ax in fig.axes)
-    assert [l.get_label() for l in fig.axes[0].get_lines()] == ["prompt_off", "env_denied", "tool_on"]
+    assert [l.get_label() for l in fig.axes[0].get_lines()] == ["base prompt_off", "base env_denied", "base tool_on"]
 
 
 def test_plot_main_default_arms_and_missing():
     df = synth()
     fig = an.plot_passk_main(df, ci=False)
     labels = [l.get_label() for l in fig.axes[0].get_lines()]
-    assert labels == ["tool_rl / prompt_off", "text_rl / prompt_off", "text_rl / tool_on",
-                      "base / prompt_off", "base / tool_on"]
+    assert labels == ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on",
+                      "base prompt_off", "base tool_on"]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         fig = an.plot_passk_main(df, arms=[("tool_rl", "plain_cot"), ("base", "prompt_off")], ci=True, iters=20)
-    assert "skipped: tool_rl/plain_cot" in buf.getvalue() and len(fig.axes[0].get_lines()) == 1
+    assert "skipped: tool_rl plain_cot" in buf.getvalue() and len(fig.axes[0].get_lines()) == 1
 
 
 def test_paste_cell_runs_against_uploaded_analyze():
@@ -85,6 +85,31 @@ def test_paste_cell_runs_against_uploaded_analyze():
         assert (out / "math500" / "passk_main.png").stat().st_size > 1000
         assert len(ns["fig1"].axes) == 3 and len(ns["fig2"].axes[0].get_lines()) == 5
 
+
+def test_plot_accepts_strings_tuples_lists_and_dicts():
+    df = synth()
+    fig = an.plot(df, ["tool_rl prompt_off", "text_rl/prompt_off", ("base", "prompt_off")], ci=False, title="t")
+    ax = fig.axes[0]
+    assert [l.get_label() for l in ax.get_lines()] == ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off"]
+    assert ax.get_title(loc="left") == "t"
+    assert {l.get_linestyle() for l in ax.get_lines()} == {"-"}        # condition does not vary: all solid
+    assert len({l.get_color() for l in ax.get_lines()}) == 3           # color = model
+    fig = an.plot(df, {"A": ["base prompt_off", "base tool_on"], "B": ["tool_rl prompt_off", "text_rl prompt_off"]},
+                  color="condition", ci=False)
+    assert [a.get_title(loc="left") for a in fig.axes] == ["A", "B"]
+    a, b = fig.axes
+    assert len({l.get_color() for l in a.get_lines()}) == 2 and {l.get_linestyle() for l in a.get_lines()} == {"-"}
+    assert len({l.get_color() for l in b.get_lines()}) == 1 and len({l.get_linestyle() for l in b.get_lines()}) == 2
+    with tempfile.TemporaryDirectory() as d:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            an.plot(df, ["base prompt_off", "nobody tool_on"], ci=False, save=f"{d}/x.png")
+        assert "skipped: nobody tool_on" in buf.getvalue() and Path(d, "x.png").stat().st_size > 1000
+    try:
+        an.plot(df, ["base"], ci=False)
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
 
 if __name__ == "__main__":
     fails = 0

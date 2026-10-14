@@ -431,10 +431,10 @@ is how often the model wrote code after being told not to. `arith_err_pct` is th
 (exact-rational check of every `a op b = c` in the prose, code blocks excluded);
 `arith_coverage_pct` says how many samples contained anything to check.
 
-Two figures. **By model**: one panel per checkpoint, the three conditions as
-lines, so you see what turning the tool off costs that model. **Main**: tool-RL
-with the tool off on the same axis as the text-RL control and the base model, with
-their tool_on curves as reference. Color is the model, line style the condition.
+Figures come from `an.plot(df, lines)`, where each line is a `"model condition"`
+string. The two cells below draw the per-model view (what turning the tool off
+costs each checkpoint) and the headline view (tool-RL with the tool off against the
+control and the base). Edit the strings to draw anything else.
 """
 
 ANALYZE = r"""
@@ -455,20 +455,28 @@ an.passk_table(df).round(3)
 """
 
 PLOT2 = r"""
-# Within each model: what does turning the tool off (prompt_off, env_denied) cost, relative to tool_on?
-fig = an.plot_passk_by_model(df, title=f"{RUN_NAME} / {DATASET}: pass@k within each model")
-fig.savefig(f"{OUT}/{DATASET}/passk_by_model.png", bbox_inches="tight")
+# an.plot draws pass@k curves. Each line is "model condition".
+#   models:     base, text_rl, tool_rl
+#   conditions: prompt_off, env_denied, tool_on
+# A list makes one panel. A dict {panel title: [lines]} makes one panel per key.
+# color="model" or "condition" picks what the color means; the other one sets the line style.
+# save=... writes a PNG next to the results. Lines not in the results are skipped with a note.
+
+# Figure 1: within each model, what does turning the tool off cost?
+an.plot(df, {
+    "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
+    "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
+    "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
+}, color="condition", title=f"{RUN_NAME}: pass@k within each model", save=f"{OUT}/{DATASET}/passk_by_model.png");
 """
 
 PLOT3 = r"""
-# The headline: tool-RL with the tool off against the text-RL control and the base model.
-# Color = model, line style = condition. Edit MAIN_ARMS to change what is drawn.
-MAIN_ARMS = [("tool_rl", "prompt_off"),
-             ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
-             ("base", "prompt_off"), ("base", "tool_on")]
-fig = an.plot_passk_main(df, arms=MAIN_ARMS, title=f"{RUN_NAME} / {DATASET}: tool-RL with the tool off vs control and base")
-fig.savefig(f"{OUT}/{DATASET}/passk_main.png", bbox_inches="tight")
-# an.plot_passk(df)   # the older view: one panel per condition, models as lines
+# Figure 2: tool-RL with the tool off, against the text-RL control and the base model
+an.plot(df, [
+    "tool_rl prompt_off",
+    "text_rl prompt_off", "text_rl tool_on",
+    "base prompt_off",    "base tool_on",
+], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base", save=f"{OUT}/{DATASET}/passk_main.png");
 """
 
 VERDICT = r"""
