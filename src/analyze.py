@@ -4,7 +4,7 @@ Usage in a notebook:
     import analyze as an
     df = an.load_results("results/math-1.5b/math500")
     an.summary(df)                 # one row per (tag, condition)
-    an.plot_passk(df)              # pass@k curves
+    an.plot_passk(df)              # pass@k curves, one panel per condition
     an.verdict(df)                 # atrophy / internalization / overlap readout
 """
 import json
@@ -17,8 +17,9 @@ import pandas as pd
 ROLE_ORDER = ["base", "text_rl", "tool_rl"]
 # dataviz reference palette, categorical slots 1-3 (CVD-validated): blue, orange, aqua
 ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
-COND_STYLE = {"prompt_off": "-", "env_denied": "--", "tool_on": ":"}
-COND_MARK = {"prompt_off": "o", "env_denied": "s", "tool_on": "^"}
+COND_ORDER = ["prompt_off", "env_denied", "tool_on", "plain_cot"]
+COND_STYLE = {"prompt_off": "-", "env_denied": "--", "tool_on": ":", "plain_cot": "-."}
+COND_MARK = {"prompt_off": "o", "env_denied": "s", "tool_on": "^", "plain_cot": "D"}
 
 
 def load_results(results_dir) -> pd.DataFrame:
@@ -126,40 +127,59 @@ def summary(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["condition", "_r"]).drop(columns="_r").reset_index(drop=True)
 
 
-def plot_passk(df: pd.DataFrame, ax=None, title=None, ci=True, iters=300):
-    import matplotlib.pyplot as plt
-    if ax is None:
-        _, ax = plt.subplots(figsize=(7, 4.5), dpi=120)
-    pk = passk_table(df)
+def _plot_lines(df, pk, ax, ci, iters, label_cond=True):
     for _, r in pk.iterrows():
         tag, cond = r["tag"], r["condition"]
         ks = ks_for(int(r["n_samples"]))
         ys = [r[f"pass@{k}"] for k in ks]
         color = ROLE_COLOR.get(tag, "#52514e")
         ax.plot(ks, ys, COND_STYLE.get(cond, "-"), color=color, lw=2,
-                marker=COND_MARK.get(cond, "o"), ms=6, label=f"{tag} / {cond}")
+                marker=COND_MARK.get(cond, "o"), ms=6,
+                label=f"{tag} / {cond}" if label_cond else tag)
         if ci:
             lo, hi = [], []
             for k in ks:
                 _, l, h = bootstrap_passk(df, tag, cond, k, iters=iters)
                 lo.append(l); hi.append(h)
             ax.fill_between(ks, lo, hi, color=color, alpha=0.12, lw=0)
+    kmax = ks_for(int(pk["n_samples"].max()))
     ax.set_xscale("log", base=2)
-    ax.set_xticks(ks_for(int(pk["n_samples"].max())))
-    ax.set_xticklabels([str(k) for k in ks_for(int(pk["n_samples"].max()))])
+    ax.set_xticks(kmax)
+    ax.set_xticklabels([str(k) for k in kmax])
     ax.set_xlabel("k (samples)")
-    ax.set_ylabel("pass@k")
     ax.set_ylim(0, 1)
     ax.grid(True, color="#e6e5e1", lw=0.8)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
-    ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
     ax.legend(frameon=False, fontsize=8, loc="lower right")
-    return ax
 
 
-def verdict(df: pd.DataFrame, cond: str = "prompt_off", iters: int = 1000):
-    """Print the three-way readout from the plan. Tool-off comparisons only."""
+def plot_passk(df: pd.DataFrame, title=None, ci=True, iters=300, facet=True):
+    """One panel per condition (three models per panel), or one panel with every arm."""
+    import matplotlib.pyplot as plt
+    pk = passk_table(df)
+    conds = [c for c in COND_ORDER if c in set(pk.condition)] + \
+            sorted(set(pk.condition) - set(COND_ORDER))
+    if not facet or len(conds) == 1:
+        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=120)
+        _plot_lines(df, pk, ax, ci, iters)
+        ax.set_ylabel("pass@k")
+        ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
+        return fig
+    fig, axes = plt.subplots(1, len(conds), figsize=(4.6 * len(conds), 4.2), dpi=120, sharey=True)
+    for ax, cond in zip(axes, conds):
+        sub = pk[pk.condition == cond].copy()
+        sub["_r"] = sub["tag"].map({t: i for i, t in enumerate(ROLE_ORDER)}).fillna(9)
+        _plot_lines(df[df.condition == cond], sub.sort_values("_r"), ax, ci, iters, label_cond=False)
+        ax.set_title(cond, loc="left")
+    axes[0].set_ylabel("pass@k")
+    fig.suptitle(title or f"pass@k, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
+    fig.tight_layout()
+    return fig
+
+
+def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):
+    """Print the three-way readout from the plan for one condition (same prompt, all models)."""
     pk = passk_table(df)
     sub = pk[pk.condition == cond]
     tags = set(sub.tag)

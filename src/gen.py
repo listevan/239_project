@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 """Sample one model under one or more tool conditions with vLLM and write JSONL.
 
-Conditions
-  prompt_off   shared plain CoT prompt, one pass, nothing executed. Code the model
-               writes anyway is logged (code_emitted) and so are fabricated
-               ```output blocks (fake_outputs).
-  env_denied   the model's own tool prompt, the tool loop runs, but every call
-               returns the AdaTIR denial message instead of executing.
-  tool_on      the model's own tool prompt, code is executed with `python -I`
-               in a temp dir (NOT a sandbox: fine for Colab, not for a shared box).
+Every model gets the same grid. Conditions:
+  prompt_off   shared no-code prompt ("do not write code"). If the model writes a
+               code block anyway, the harness intercepts it and injects the denial
+               message, so nothing is ever executed and no output is fabricated.
+               n_calls on these rows = non-compliance count.
+  env_denied   the model's tool prompt (asks for code). Every code block is
+               intercepted and answered with the denial message.
+  tool_on      the model's tool prompt. Code is executed with `python -I` in a
+               temp dir (NOT a sandbox: fine for Colab, not for a shared box).
+               Calls past --max-calls get the budget message instead.
+  plain_cot    optional. Shared plain CoT prompt, one pass, no interception at
+               all: the condition prior work (CIR) used. Code the model writes is
+               just text and it will fabricate its own ```output block.
 
 Only `main()` imports vllm, so the helpers can be unit-tested on a laptop.
 
@@ -46,6 +51,11 @@ TEMPLATES = {
         "<|im_start|>system\nPlease reason step by step, and put your final answer "
         "within \\boxed{}.<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
     ),
+    "qwen_math_nocode": (
+        "<|im_start|>system\nPlease reason step by step, and put your final answer "
+        "within \\boxed{}. Do not write code: solve the problem in natural language and "
+        "arithmetic only.<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
     "qwen_math_tir": (
         "<|im_start|>system\nPlease integrate natural language reasoning with programs to "
         "solve the problem above, and put your final answer within \\boxed{}.<|im_end|>\n"
@@ -66,8 +76,13 @@ TEMPLATES = {
     ),
 }
 
-DENIAL = ("Tool call budget exceeded; the code was not executed. "
-          "Please continue reasoning and give the final answer.")
+# Injected in place of execution results. AdaTIR wording for the over-budget case;
+# an honest "no interpreter" wording for prompt_off / env_denied (override: --denial-text).
+DENIAL_BUDGET = ("Tool call budget exceeded; the code was not executed. "
+                 "Please continue reasoning and give the final answer.")
+DENIAL_UNAVAILABLE = ("No interpreter is available; the code was not executed. "
+                      "Continue reasoning without running code and give the final answer.")
+DENIAL = DENIAL_UNAVAILABLE
 
 STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # model opens the output block itself
@@ -75,7 +90,8 @@ TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
 
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
-CONDITIONS = ("prompt_off", "env_denied", "tool_on")
+CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot")
+LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on")
 
 
 def build_prompt(template: str, question: str) -> str:
@@ -198,7 +214,7 @@ class Sample:
 
 
 def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, cond: str,
-            max_calls: int, executor=execute):
+            max_calls: int, executor=execute, denial=None):
     """Apply one generation chunk to sample `s`. Returns the text to inject (or None)."""
     s.gen += text
     s.gen_tokens += n_tokens
@@ -217,7 +233,7 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
         result, err = executor(code)
         s.n_exec_err += int(err)
     else:
-        result = DENIAL
+        result = DENIAL_BUDGET if cond == "tool_on" else (denial or DENIAL_UNAVAILABLE)
         s.n_denied += 1
     inj = ("\n" + result + "\n```\n") if stop_reason == STOP_OUTPUT else ("```output\n" + result + "\n```\n")
     s.gen += inj
@@ -244,7 +260,8 @@ def splice_round(pending, cond, args, pool):
             ex = lambda code, f=fut: f.result()  # noqa: E731
         else:
             ex = lambda code: execute(code, args.exec_timeout, args.max_output_chars)  # noqa: E731
-        advance(s, text, ntok, fin, stop, cond, args.max_calls, executor=ex)
+        advance(s, text, ntok, fin, stop, cond, args.max_calls, executor=ex,
+                denial=getattr(args, "denial_text", None))
 
 
 def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
@@ -297,10 +314,13 @@ def parse_args(argv=None):
     p.add_argument("--revision", default=None)
     p.add_argument("--tag", required=True, help="role label: base | tool_rl | text_rl | ...")
     p.add_argument("--conditions", default="prompt_off")
-    p.add_argument("--shared-template", default="qwen_math_cot")
-    p.add_argument("--native-template", default="qwen_math_cot",
-                   help="the model's own training prompt, used for env_denied and tool_on")
-    p.add_argument("--prompt-off-template", choices=["shared", "native"], default="shared")
+    p.add_argument("--shared-template", default="qwen_math_nocode",
+                   help="no-code prompt used for prompt_off, same for every model")
+    p.add_argument("--native-template", default="qwen_math_tir",
+                   help="the model's tool prompt, used for env_denied and tool_on")
+    p.add_argument("--plain-template", default="qwen_math_cot", help="prompt for plain_cot")
+    p.add_argument("--denial-text", default=None,
+                   help="override the message injected for prompt_off / env_denied")
     p.add_argument("--dataset", default="math500", choices=["math500", "aime24", "aime25"])
     p.add_argument("--n-problems", type=int, default=0, help="0 = all")
     p.add_argument("--n", type=int, default=16, help="samples per problem")
@@ -336,7 +356,9 @@ def main(argv=None):
 
     def template_for(cond):
         if cond == "prompt_off":
-            return args.shared_template if args.prompt_off_template == "shared" else args.native_template
+            return args.shared_template
+        if cond == "plain_cot":
+            return args.plain_template
         return args.native_template
 
     todo = [(c, template_for(c)) for c in conds
@@ -390,7 +412,7 @@ def main(argv=None):
         prompts = [build_prompt(template, it["problem"]) for it in items]
         print(f"== {args.tag} / {cond} / {template}: {len(prompts)} prompts x {args.n} samples", flush=True)
         samples = []
-        if cond == "prompt_off":
+        if cond == "plain_cot":
             res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS), use_tqdm=True)
             for pidx, r in enumerate(res):
                 for sidx, o in enumerate(r.outputs):

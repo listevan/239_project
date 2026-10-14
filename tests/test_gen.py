@@ -90,6 +90,21 @@ def test_env_denied_injects_message():
     assert gen.DENIAL in s.gen and "```output\n" + gen.DENIAL in s.gen
 
 
+def test_prompt_off_intercepts_code():
+    script = {0: ("I will just compute.\n```python\nprint(2+2)\n```\n", "stop", gen.STOP_FENCE),
+              1: ("2 + 2 = 4 so \\boxed{4}", "stop", None)}
+    s = run("prompt_off", script, args())
+    assert s.n_calls == 1 and s.n_denied == 1 and s.n_exec_err == 0
+    assert gen.DENIAL_UNAVAILABLE in s.gen and "```output\n4" not in s.gen
+    assert "Do not write code" in gen.build_prompt("qwen_math_nocode", "Q")
+
+
+def test_custom_denial_text():
+    script = {0: ("```python\nprint(1)\n```\n", "stop", gen.STOP_FENCE), 1: ("\\boxed{1}", "stop", None)}
+    s = run("env_denied", script, args(denial_text="NOPE"))
+    assert "```output\nNOPE\n```" in s.gen
+
+
 def test_model_opens_output_block_itself():
     script = {0: ("```python\nprint(5)\n```\n```output", "stop", gen.STOP_OUTPUT),
               1: ("\nThus \\boxed{5}", "stop", None)}
@@ -104,7 +119,7 @@ def test_budget_cap_then_denial():
               3: ("done \\boxed{3}", "stop", None)}
     s = run("tool_on", script, args(max_calls=2))
     assert s.n_calls == 3 and s.n_denied == 1 and s.n_exec_err == 0
-    assert s.gen.count("```output") == 3 and gen.DENIAL in s.gen
+    assert s.gen.count("```output") == 3 and gen.DENIAL_BUDGET in s.gen
 
 
 def test_fabricated_output_and_truncation():

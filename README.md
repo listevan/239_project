@@ -11,7 +11,7 @@ The full plan is in `docs/experiment1_plan.md`.
 | Path | What |
 |---|---|
 | `notebooks/tool_atrophy_pilot.ipynb` | the Colab notebook: install, run, analyze. Self-contained. |
-| `src/gen.py` | vLLM sampler with the tool loop and three conditions (`prompt_off`, `env_denied`, `tool_on`); writes JSONL |
+| `src/gen.py` | vLLM sampler with the tool loop and the conditions below; writes JSONL |
 | `src/analyze.py` | pass@k (unbiased estimator), paired bootstrap CIs, summary table, plot, verdict |
 | `src/arith_check.py` | exact-rational checker for `a op b = c` in prose |
 | `tools/build_notebook.py` | regenerates the notebook from `src/` (the notebook embeds the sources as `%%writefile` cells) |
@@ -28,12 +28,12 @@ The full plan is in `docs/experiment1_plan.md`.
    checkpoint runs in its own subprocess and finished conditions are skipped, so a
    disconnect only costs the condition in flight.
 
-Rough A100 cost at MATH-500 x 16 samples: 1.5B about an hour for all five
-conditions, 7B about three to four hours.
+Rough A100 cost at MATH-500 x 16 samples for the nine-arm grid: 1.5B about two
+hours, 7B five to seven hours.
 
 ## Presets
 
-| Preset | base | text-RL control | tool-RL | tool prompt |
+| Preset | base | text-RL control | tool-RL | tool-RL prompt |
 |---|---|---|---|---|
 | `math-1.5b` | Qwen/Qwen2.5-Math-1.5B | sail/Qwen2.5-Math-1.5B-Oat-Zero | GAIR/ToRL-1.5B | ToRL Fig. 3 |
 | `math-7b` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | RUC-AIBOX/Qwen-Math-7B-CIR | CIR Fig. 5 |
@@ -46,13 +46,20 @@ placement in the system turn is an assumption.
 
 ## Conditions
 
-| Condition | Prompt | Code the model writes |
-|---|---|---|
-| `prompt_off` | shared Qwen-Math CoT prompt | never executed; code emission and fabricated `output` blocks are logged |
-| `env_denied` | the checkpoint's own tool prompt | the loop runs, every call gets the AdaTIR denial message |
-| `tool_on` | the checkpoint's own tool prompt | executed with `python -I`, 10 s timeout, 4-call budget |
+Every model runs the whole grid, so each condition is its own three-way comparison.
 
-An effect under `prompt_off` but not `env_denied` is prompt mismatch, not lost ability.
+| Condition | Prompt | If the model writes a code block |
+|---|---|---|
+| `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial injected, nothing runs |
+| `env_denied` | the model's tool prompt | intercepted, denial injected, nothing runs |
+| `tool_on` | the model's tool prompt | executed with `python -I`, 10 s timeout, 4-call budget |
+| `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block (CIR's condition) |
+
+Tool prompts: ToRL's own for ToRL, the Qwen2.5-Math TIR prompt (same instruction
+sentence, chat format) for base and Oat-Zero, CIR's Fig. 5 text for the CIR
+checkpoint. The denial text is "No interpreter is available; the code was not
+executed. Continue reasoning without running code and give the final answer."
+Calls past the budget under `tool_on` get AdaTIR's "budget exceeded" message.
 
 ## Local development
 

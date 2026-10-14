@@ -44,25 +44,27 @@ tool). Same prompt, same decoding, pass@k plus an arithmetic error rate.
 The only published hint is CIR (2505.24480) Fig. 6: one 7B model, no text-RL
 control. This notebook adds the control and a direct skill metric.
 
-**What runs.** `src/gen.py` samples one checkpoint under one or more conditions
-with vLLM and writes one JSONL per (model, condition) to Google Drive, so a
-disconnect costs at most one condition. `src/analyze.py` turns the JSONL into
-pass@k curves, bootstrap CIs, and a verdict.
+**What runs.** `src/gen.py` samples one checkpoint under each condition with vLLM
+and writes one JSONL per (model, condition) to Google Drive, so a disconnect costs
+at most one condition. `src/analyze.py` turns the JSONL into pass@k curves,
+bootstrap CIs, and a verdict. Every model gets the same grid, so each condition is
+read as its own three-way comparison.
 
-| Condition | Prompt | Code the model writes |
+| Condition | Prompt | If the model writes a code block |
 |---|---|---|
-| `prompt_off` | shared plain CoT prompt (Qwen-Math) | never executed, logged |
-| `env_denied` | the checkpoint's own tool prompt | every call returns the AdaTIR denial message |
-| `tool_on` | the checkpoint's own tool prompt | executed with `python -I`, 4-call budget |
+| `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial message injected, nothing runs |
+| `env_denied` | the model's tool prompt (asks for code) | intercepted, denial message injected, nothing runs |
+| `tool_on` | the model's tool prompt | executed with `python -I`, 4-call budget, then the budget message |
+| `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block. CIR's condition. |
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
 Rough wall-clock on an A100 with vLLM, MATH-500 at 16 samples/problem:
 
-| Preset | per condition | whole run (5 conditions) |
+| Preset | per arm | whole grid (9 arms) |
 |---|---|---|
-| math-1.5b | 10 to 15 min | about 1 h |
-| math-7b | 30 to 45 min | 3 to 4 h |
+| math-1.5b | 10 to 15 min | about 2 h |
+| math-7b | 30 to 45 min | 5 to 7 h |
 
 Run the **smoke test** first (about 5 minutes). It exercises every code path on
 20 problems and tells you the pipeline is wired before you spend compute units.
@@ -121,51 +123,55 @@ one-off run. `gen.py` prints its full CLI with `python src/gen.py --help`.
 CONFIG_MD = r"""
 ## 4. Configure
 
-Presets name a (base, text-RL, tool-RL) trio from one base model. Prompt
-templates were checked against the model cards and papers on 2026-10-13:
+Presets name a (base, text-RL, tool-RL) trio from one base model. Each model also
+carries its tool prompt: ToRL's own (paper Fig. 3) for ToRL, the Qwen2.5-Math TIR
+prompt (same instruction sentence, chat format) for base and Oat-Zero, CIR's Fig. 5
+text for the CIR checkpoint. Set every `native` to the same key if you want one
+identical tool prompt for all three.
 
-| Preset | base | text-RL (control) | tool-RL | tool prompt |
-|---|---|---|---|---|
-| `math-1.5b` | Qwen/Qwen2.5-Math-1.5B | sail/Qwen2.5-Math-1.5B-Oat-Zero | GAIR/ToRL-1.5B | ToRL Fig. 3, verbatim |
-| `math-7b` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | RUC-AIBOX/Qwen-Math-7B-CIR (the Fig. 6 model) | CIR Fig. 5 text (system turn assumed) |
-| `math-7b-torl` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | GAIR/ToRL-7B | ToRL Fig. 3 |
-| `general-7b-zerotir` | Qwen/Qwen2.5-7B | hkust-nlp/Qwen-2.5-7B-SimpleRL-Zoo | htxu91/zero-tir-7b-550step | Qwen-Math TIR (unverified) |
+| Preset | base | text-RL (control) | tool-RL |
+|---|---|---|---|
+| `math-1.5b` | Qwen/Qwen2.5-Math-1.5B | sail/Qwen2.5-Math-1.5B-Oat-Zero | GAIR/ToRL-1.5B |
+| `math-7b` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | RUC-AIBOX/Qwen-Math-7B-CIR (the Fig. 6 model) |
+| `math-7b-torl` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | GAIR/ToRL-7B |
+| `general-7b-zerotir` | Qwen/Qwen2.5-7B | hkust-nlp/Qwen-2.5-7B-SimpleRL-Zoo | htxu91/zero-tir-7b-550step (tool prompt unverified) |
 
 Context is capped at 4096 tokens for the Qwen2.5-Math trios because that is the
 base model's and Oat-Zero's native context (CIR evaluated at 16k by extrapolating;
 `ALLOW_LONG=True` reproduces that). Truncation rate is reported either way.
 
-`BASE_TOOL_ON=True` adds a cheap fourth arm, the base model with the tool prompt
-and execution on (CIR's `Base_code`).
+`PLAIN_COT=True` adds the fourth, non-intercepting condition for a tie to CIR's
+numbers. `DENIAL_TEXT` overrides the message injected under `prompt_off` and
+`env_denied`.
 """
 
 CONFIG = r"""
 PRESETS = {
     "math-1.5b": dict(max_model_len=4096, models={
         "base":    dict(model="Qwen/Qwen2.5-Math-1.5B",            native="qwen_math_tir"),
-        "text_rl": dict(model="sail/Qwen2.5-Math-1.5B-Oat-Zero",   native="qwen_math_cot"),
+        "text_rl": dict(model="sail/Qwen2.5-Math-1.5B-Oat-Zero",   native="qwen_math_tir"),
         "tool_rl": dict(model="GAIR/ToRL-1.5B",                     native="torl"),
     }),
     "math-7b": dict(max_model_len=4096, models={
         "base":    dict(model="Qwen/Qwen2.5-Math-7B",              native="qwen_math_tir"),
-        "text_rl": dict(model="sail/Qwen2.5-Math-7B-Oat-Zero",     native="qwen_math_cot"),
+        "text_rl": dict(model="sail/Qwen2.5-Math-7B-Oat-Zero",     native="qwen_math_tir"),
         "tool_rl": dict(model="RUC-AIBOX/Qwen-Math-7B-CIR",        native="cir"),
     }),
     "math-7b-torl": dict(max_model_len=4096, models={
         "base":    dict(model="Qwen/Qwen2.5-Math-7B",              native="qwen_math_tir"),
-        "text_rl": dict(model="sail/Qwen2.5-Math-7B-Oat-Zero",     native="qwen_math_cot"),
+        "text_rl": dict(model="sail/Qwen2.5-Math-7B-Oat-Zero",     native="qwen_math_tir"),
         "tool_rl": dict(model="GAIR/ToRL-7B",                       native="torl"),
     }),
     "general-7b-zerotir": dict(max_model_len=8192, models={
         "base":    dict(model="Qwen/Qwen2.5-7B",                   native="qwen_math_tir"),
-        "text_rl": dict(model="hkust-nlp/Qwen-2.5-7B-SimpleRL-Zoo", native="qwen_math_cot"),
+        "text_rl": dict(model="hkust-nlp/Qwen-2.5-7B-SimpleRL-Zoo", native="qwen_math_tir"),
         "tool_rl": dict(model="htxu91/zero-tir-7b-550step",         native="qwen_math_tir"),
     }),
 }
 
 PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
 DATASET = "math500"        # math500 | aime24 | aime25
-SMOKE = True               # True: 20 problems x 4 samples x 1024 tokens, ~5 min. False: the real run.
+SMOKE = True               # True: 20 problems x 4 samples x 1024 tokens, ~10 min. False: the real run.
 
 N_PROBLEMS = 20 if SMOKE else 0        # 0 = all 500 (AIME sets have 30)
 N_SAMPLES = 4 if SMOKE else 16         # raise to 32 or 64 for a sharper high-k tail
@@ -174,15 +180,12 @@ TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0   # CIR Fig. 6 settings
 MAX_CALLS = 4
 ALLOW_LONG = False         # True + MAX_MODEL_LEN=16384 mimics CIR's 16k budget on 4k-native models
 MAX_MODEL_LEN = PRESETS[PRESET]["max_model_len"]
-BASE_TOOL_ON = False
-SHARED_TEMPLATE = "qwen_math_cot"
+SHARED_TEMPLATE = "qwen_math_nocode"   # prompt_off prompt, identical for every model
+PLAIN_COT = False          # True adds the non-intercepting plain_cot arm (CIR's condition)
+DENIAL_TEXT = None         # None = "No interpreter is available; the code was not executed. ..."
 GPU_MEM = 0.90
 
-CONDITIONS = {
-    "base":    ["prompt_off"] + (["tool_on"] if BASE_TOOL_ON else []),
-    "text_rl": ["prompt_off"],
-    "tool_rl": ["prompt_off", "env_denied", "tool_on"],
-}
+CONDITIONS = ["prompt_off", "env_denied", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
 RUN_NAME = f"{PRESET}{'-smoke' if SMOKE else ''}"
 OUT = f"{RESULTS}/{RUN_NAME}"
 print(RUN_NAME, "->", OUT)
@@ -191,7 +194,7 @@ print(RUN_NAME, "->", OUT)
 RUN_MD = r"""
 ## 5. Run
 
-One subprocess per checkpoint: it loads the model once, runs its conditions, and
+One subprocess per checkpoint: it loads the model once, runs every condition, and
 writes `<tag>__<condition>__<template>.jsonl` plus a `.meta.json` with timings.
 Finished files are skipped, so after a disconnect just re-run this cell. Expect
 the first run of each model to spend a few minutes downloading weights.
@@ -202,7 +205,7 @@ import subprocess, sys, time
 for tag, spec in PRESETS[PRESET]["models"].items():
     cmd = [sys.executable, "src/gen.py",
            "--model", spec["model"], "--tag", tag,
-           "--conditions", ",".join(CONDITIONS[tag]),
+           "--conditions", ",".join(CONDITIONS),
            "--shared-template", SHARED_TEMPLATE, "--native-template", spec["native"],
            "--dataset", DATASET, "--n-problems", str(N_PROBLEMS), "--n", str(N_SAMPLES),
            "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
@@ -210,6 +213,8 @@ for tag, spec in PRESETS[PRESET]["models"].items():
            "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--out", OUT]
     if ALLOW_LONG:
         cmd.append("--allow-long")
+    if DENIAL_TEXT:
+        cmd += ["--denial-text", DENIAL_TEXT]
     print("\n$", " ".join(cmd), flush=True)
     t0 = time.time()
     r = subprocess.run(cmd)
@@ -222,9 +227,10 @@ for tag, spec in PRESETS[PRESET]["models"].items():
 ANALYZE_MD = r"""
 ## 6. Analyze
 
-`summary` is the headline table. `trunc_pct`, `no_boxed_pct`, `code_pct` and
-`fake_out_pct` are the failure modes that would make a pass@k gap uninterpretable,
-so read them before the curves. `arith_err_pct` is the direct skill metric
+`summary` is the headline table, one row per arm. `trunc_pct`, `no_boxed_pct`,
+`code_pct` and `fake_out_pct` are the failure modes that would make a pass@k gap
+uninterpretable, so read them before the curves. Under `prompt_off`, `calls_mean`
+is how often the model wrote code after being told not to. `arith_err_pct` is the direct skill metric
 (exact-rational check of every `a op b = c` in the prose, code blocks excluded);
 `arith_coverage_pct` says how many samples contained anything to check.
 """
@@ -247,29 +253,33 @@ an.passk_table(df).round(3)
 """
 
 PLOT2 = r"""
-ax = an.plot_passk(df, title=f"{RUN_NAME} / {DATASET}: pass@k, tool off unless marked")
-ax.figure.savefig(f"{OUT}/{DATASET}/passk.png", bbox_inches="tight")
+fig = an.plot_passk(df, title=f"{RUN_NAME} / {DATASET}: pass@k by condition")
+fig.savefig(f"{OUT}/{DATASET}/passk.png", bbox_inches="tight")
 """
 
 VERDICT = r"""
-an.verdict(df, "prompt_off")
-print()
-an.verdict(df, "env_denied") if "env_denied" in set(df.condition) else None
+for cond in an.COND_ORDER:
+    if cond in set(df.condition):
+        an.verdict(df, cond)
+        print()
 """
 
 NEXT_MD = r"""
 ## 7. Reading the result
 
-- **prompt_off vs env_denied for tool_rl.** A deficit under `prompt_off` that
-  vanishes under `env_denied` is prompt mismatch, not lost ability. A deficit under
-  both is the real thing.
+- **Read within a column.** Each condition puts all three models under the same
+  prompt and the same harness, so `verdict` compares them per condition.
+  `env_denied` is the headline: every model asked for code, nobody gets to run it.
+- **prompt_off tests compliance too.** `calls_mean` on those rows is how often a
+  model wrote code after being told not to. A tool-RL model that cannot stop is
+  itself a finding.
 - **Compare to text_rl, not just base.** RL alone sharpens pass@1 and can lower
   high-k pass@k (the sharpening confound). The question is whether tool-RL sits
   below text-RL.
-- **Check failure modes first.** If tool_rl has 30% truncation or writes code in
-  every `prompt_off` sample, its curve measures format collapse.
+- **Check failure modes first.** If an arm has 30% truncation or never boxes an
+  answer, its curve measures format collapse.
 - **Arithmetic error rate** is the skill the interpreter replaces. Tool-RL above
-  text-RL here, with the same accuracy, is atrophy of exactly that skill.
+  text-RL here, at the same accuracy, is atrophy of exactly that skill.
 
 Then: flip `SMOKE=False`, raise `N_SAMPLES` to 32 or 64 for the high-k tail, add
 `aime24`/`aime25` with `N_SAMPLES=64`, and move to `math-7b` (the CIR checkpoint
@@ -278,9 +288,20 @@ reproduces Fig. 6 with the control added). Per-subject breakdowns are one
 
 **Caveats.** `tool_on` executes model-written Python on this VM with a 10 s
 timeout; fine for Colab, not for a shared machine. The CIR prompt's turn placement
-is assumed. The ZeroTIR prompt is unverified (its repo has no card), so trust only
-its `prompt_off` row. Qwen2.5-Math's native context is 4096, so long solutions
-truncate; the rate is in the table.
+is assumed. The ZeroTIR tool prompt is unverified (its repo has no card).
+Qwen2.5-Math's native context is 4096, so long solutions truncate; the rate is in
+the table.
+"""
+
+DOWNLOAD = r"""
+# Pull the trajectories to your laptop: every JSONL row carries the full generation
+# text plus call / denial / truncation counts. Uncomment, run, then unzip locally and
+# point analyze.load_results() at the <run>/<dataset> folder.
+#
+# from google.colab import files
+# import shutil
+# shutil.make_archive(f"/content/{RUN_NAME}", "zip", RESULTS, RUN_NAME)
+# files.download(f"/content/{RUN_NAME}.zip")
 """
 
 
@@ -301,7 +322,7 @@ def build():
         md(CONFIG_MD), code(CONFIG),
         md(RUN_MD), code(RUN),
         md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(PLOT2), code(VERDICT),
-        md(NEXT_MD),
+        md(NEXT_MD), code(DOWNLOAD),
     ]
     nbf.validate(nb)
     OUT.parent.mkdir(exist_ok=True)
