@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import time
@@ -88,7 +89,9 @@ def test_report_run_resolves_root_and_grades_first():
                 os.environ["RESULTS_ROOT"] = old
         out = buf.getvalue()
         assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out and "figures ->" in out
-        assert (folder / "passk_main.png").stat().st_size > 1000 and (folder / "passk_by_model.png").exists()
+        mains, bys = list(folder.glob("passk_main_*.png")), list(folder.glob("passk_by_model_*.png"))
+        assert len(mains) == 1 and mains[0].stat().st_size > 1000 and len(bys) == 1
+        assert re.fullmatch(r"passk_main_\d{4}-\d{2}-\d{2}_\d{4}\.png", mains[0].name)
         assert json.load(open(folder / "base__prompt_off__qwen_math_nocode.meta.json"))["graded"] is True
         try:
             report.main(["--run", "nope"])

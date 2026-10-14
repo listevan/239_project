@@ -5,10 +5,11 @@
     python src/report.py <results>/<run>/<dataset>            # explicit folder
 
 --run finds the folder under the synced Google Drive for desktop (any 239_project/results up to
-three levels under ~/Library/CloudStorage/GoogleDrive-*/My Drive), else $RESULTS_ROOT, else ./results. Ungraded rows are graded first with src/grade.py (skip with --no-grade). Then: the summary
-table, the pass@k table, the verdict for every condition, and passk_by_model.png (one panel per model,
-conditions as lines) plus passk_main.png (tool-RL with the tool off against the control and the base),
-saved next to the data.
+five levels under ~/Library/CloudStorage/GoogleDrive-*/My Drive), else $RESULTS_ROOT, else ./results. Ungraded rows are graded first with src/grade.py (skip with --no-grade). Then: the summary
+table, the pass@k table, the verdict for every condition, and passk_by_model_<date>.png (one panel per model,
+conditions as lines) plus passk_main_<date>.png (tool-RL with the tool off against the control and the base),
+saved next to the data. Also the tool-call table: how many samples called, calls per
+caller, and retries after a denial.
 """
 import argparse
 import os
@@ -29,13 +30,13 @@ MAIN = ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on", "base pro
 
 
 def find_results_root(home=None):
-    """$RESULTS_ROOT, else a 239_project/results folder up to three levels under any Google Drive
+    """$RESULTS_ROOT, else a 239_project/results folder up to five levels under any Google Drive
     for desktop mount (shallowest first), else ./results."""
     if os.environ.get("RESULTS_ROOT"):
         return Path(os.environ["RESULTS_ROOT"])
     hits = []
     for mount in sorted(Path(home or Path.home()).glob("Library/CloudStorage/GoogleDrive-*/My Drive")):
-        for depth in range(4):
+        for depth in range(6):
             hits += [q for q in mount.glob("*/" * depth + "239_project/results") if q.is_dir()]
     if hits:
         return sorted(hits, key=lambda q: len(q.parts))[0]
@@ -72,16 +73,20 @@ def main(argv=None):
     print(f"{len(df)} samples, {df.problem_id.nunique()} problems, {df.arm.nunique()} arms\n")
     print(an.summary(df).to_string(index=False), "\n")
     print(an.passk_table(df).round(3).to_string(index=False), "\n")
+    print("tool calls (see analyze.calls_table.__doc__):")
+    print(an.calls_table(df).to_string(index=False), "\n")
     for cond in an.COND_ORDER:
         if cond in set(df.condition):
             an.verdict(df, cond)
             print()
     ci = not args.no_ci
+    stamp, cap = an.file_stamp(), an.provenance(d)
+    by_model, main_fig = d / f"passk_by_model_{stamp}.png", d / f"passk_main_{stamp}.png"
     an.plot(df, BY_MODEL, color="condition", ci=ci, title=f"{title}: pass@k within each model",
-            save=d / "passk_by_model.png")
+            save=by_model, caption=cap)
     an.plot(df, MAIN, ci=ci, title=f"{title}: tool-RL with the tool off vs control and base",
-            save=d / "passk_main.png")
-    print(f"figures -> {d / 'passk_by_model.png'}, {d / 'passk_main.png'}")
+            save=main_fig, caption=cap)
+    print(f"figures -> {by_model.name}, {main_fig.name}  in {d}\n   caption: {cap}")
 
 
 if __name__ == "__main__":

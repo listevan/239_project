@@ -72,6 +72,17 @@ Run the **smoke test** first (about 5 minutes). It exercises every code path on
 20 problems and tells you the pipeline is wired before you spend compute units.
 """
 
+GPU_CHECK = r"""
+import shutil, subprocess
+NO_GPU_MSG = ("NO GPU in this runtime. Colab: Runtime > Change runtime type > GPU (T4 / L4 / A100). "
+              "VS Code Colab extension: disconnect and reconnect choosing a GPU runtime. Then run again from this cell.")
+if shutil.which("nvidia-smi"):
+    print(subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv"],
+                         capture_output=True, text=True).stdout)
+else:
+    print(NO_GPU_MSG)
+"""
+
 INSTALL_MD = r"""
 ## 1. Install
 
@@ -95,7 +106,7 @@ DRIVE_MD = r"""
 
 Results are written under `239_project/results/<run>/<dataset>/` on Drive so they
 survive the session. An existing `239_project` folder anywhere up to three levels
-under MyDrive is reused, so you can file it wherever you like in Drive; otherwise
+under MyDrive is reused (up to five levels deep), so you can file it wherever you like in Drive; otherwise
 `MyDrive/239_project` is created. Accept the Drive popup; if the path printed below
 starts with `/content/239_project_runs` the results are on the VM disk and die with
 it. Outside Colab this falls back to a local folder.
@@ -103,7 +114,7 @@ it. Outside Colab this falls back to a local folder.
 
 DRIVE = r"""
 import glob, os
-PROJECT_DIR = None   # None: reuse an existing 239_project folder anywhere up to 3 levels under MyDrive
+PROJECT_DIR = None   # None: reuse an existing 239_project folder anywhere up to 5 levels under MyDrive
                      # (so moving it around in Drive is fine), else create MyDrive/239_project.
                      # Or name it explicitly, e.g. "UCLA (Jun 2026 onward)/239_project".
 try:
@@ -118,7 +129,7 @@ if ON_COLAB:
     if PROJECT_DIR:
         ROOT = f"/content/drive/MyDrive/{PROJECT_DIR}"
     else:
-        hits = sorted((p for d in range(4) for p in glob.glob("/content/drive/MyDrive/" + "*/" * d + "239_project/results")
+        hits = sorted((p for d in range(6) for p in glob.glob("/content/drive/MyDrive/" + "*/" * d + "239_project/results")
                        if os.path.isdir(p)), key=lambda p: p.count("/"))
         ROOT = os.path.dirname(hits[0]) if hits else "/content/drive/MyDrive/239_project"
         if len(hits) > 1:
@@ -359,6 +370,7 @@ def show(tag):
     if not graded:
         print("rows are ungraded: pass@1 appears after  python src/grade.py <this folder>  on your laptop")
     aggs = dict(samples=("correct", "size"), problems=("problem_id", "nunique"), trunc=("truncated", "mean"),
+                called=("n_calls", lambda s: (s > 0).mean()), calls_total=("n_calls", "sum"),
                 calls=("n_calls", "mean"), denied=("n_denied", "mean"))
     if graded:
         d = d.assign(correct=d["correct"].astype(float))
@@ -408,6 +420,10 @@ def run_model(tag):
     print(f"[{tag}] {spec['model']}  ->  {OUT}/{DATASET}")
     if status(tag) == 0 and not OVERWRITE:
         print(f"[{tag}] every arm is already on Drive, loading instead of regenerating")
+    elif not shutil.which("nvidia-smi"):
+        print(f"[{tag}] arms are missing but this runtime has NO GPU, nothing generated.\n"
+              "  Colab: Runtime > Change runtime type > GPU. VS Code: reconnect choosing a GPU runtime.\n"
+              "  Then run again from cell 1 (a runtime change resets the VM).")
     else:
         cmd = [sys.executable, "src/gen.py",
                "--model", spec["model"], "--tag", tag,
@@ -460,7 +476,7 @@ uv run src/report.py --run math-1.5b-smoke --dataset math500
 ```
 
 `report.py --run` finds the run under Google Drive for desktop (any
-`239_project/results` up to three levels under My Drive), grades the ungraded rows
+`239_project/results` up to five levels under My Drive), grades the ungraded rows
 in place first (`src/grade.py`, skips rows already
 graded), then prints the tables and saves the two figures next to the data. Pass a
 folder instead of `--run` for an unzipped download from the last cell. The same functions are available in a local notebook via
@@ -470,8 +486,9 @@ With `GRADE_ON_COLAB = True` everything below runs here.
 
 `summary` is the headline table, one row per arm. `trunc_pct`, `no_boxed_pct`,
 `code_pct` and `fake_out_pct` are the failure modes that would make a pass@k gap
-uninterpretable, so read them before the curves. Under `prompt_off`, `calls_mean`
-is how often the model wrote code after being told not to. `arith_err_pct` is the direct skill metric
+uninterpretable, so read them before the curves. Under `prompt_off`, `called_pct`
+is the share of samples that wrote code after being told not to; `calls_table`
+breaks tool use down further (calls per caller, retries after a denial). `arith_err_pct` is the direct skill metric
 (exact-rational check of every `a op b = c` in the prose, code blocks excluded);
 `arith_coverage_pct` says how many samples contained anything to check.
 
@@ -492,6 +509,8 @@ pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 if GRADE_ON_COLAB:
     df = load_run(require_graded=True)   # current config's files only; strays from older runs are listed and skipped
     print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
+    STAMP, CAPTION = an.file_stamp(), an.provenance(f"{OUT}/{DATASET}")   # figures are dated and captioned
+    print(CAPTION)
     display(an.summary(df))
 else:
     df = None
@@ -504,13 +523,22 @@ if df is not None:
     display(an.passk_table(df).round(3))
 """
 
+CALLS = r"""
+# Tool-call behaviour. called_pct: % of samples that wrote a python block (under prompt_off: after being
+# told not to). calls_per_caller: calls among those. retry_after_denial: further calls after the first
+# denial (every call after a denial is denied too, so this is n_denied - 1). calls=k: samples by call count.
+if df is not None:
+    display(an.calls_table(df))
+"""
+
 PLOT2 = r"""
 # an.plot draws pass@k curves. Each line is "model condition".
 #   models:     base, text_rl, tool_rl
 #   conditions: prompt_off, env_denied, tool_on
 # A list makes one panel. A dict {panel title: [lines]} makes one panel per key.
 # color="model" or "condition" picks what the color means; the other one sets the line style.
-# save=... writes a PNG next to the results. Lines not in the results are skipped with a note.
+# save=... writes a PNG next to the results (dated with STAMP); caption= puts the data's generation
+# dates under the plot. Lines not in the results are skipped with a note.
 
 # Figure 1: within each model, what does turning the tool off cost?
 if df is not None:
@@ -518,7 +546,8 @@ if df is not None:
         "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
         "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
         "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
-    }, color="condition", title=f"{RUN_NAME}: pass@k within each model", save=f"{OUT}/{DATASET}/passk_by_model.png");
+    }, color="condition", title=f"{RUN_NAME}: pass@k within each model",
+       save=f"{OUT}/{DATASET}/passk_by_model_{STAMP}.png", caption=CAPTION);
 """
 
 PLOT3 = r"""
@@ -528,7 +557,8 @@ if df is not None:
         "tool_rl prompt_off",
         "text_rl prompt_off", "text_rl tool_on",
         "base prompt_off",    "base tool_on",
-    ], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base", save=f"{OUT}/{DATASET}/passk_main.png");
+    ], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base",
+       save=f"{OUT}/{DATASET}/passk_main_{STAMP}.png", caption=CAPTION);
 """
 
 VERDICT = r"""
@@ -590,13 +620,13 @@ def build():
     }
     nb.cells = [
         md(INTRO),
-        code("!nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv"),
+        code(GPU_CHECK),
         md(INSTALL_MD), code(INSTALL),
         md(DRIVE_MD), code(DRIVE),
         md(FILES_MD), writefile("arith_check.py"), writefile("gen.py"), writefile("analyze.py"),
         md(CONFIG_MD), code(CONFIG),
         md(RUN_MD), code(RUN_SETUP), code(RUN_BASE), code(RUN_TEXT_RL), code(RUN_TOOL_RL),
-        md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(PLOT2), code(PLOT3), code(VERDICT),
+        md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(CALLS), code(PLOT2), code(PLOT3), code(VERDICT),
         md(NEXT_MD), code(DOWNLOAD),
     ]
     nbf.validate(nb)

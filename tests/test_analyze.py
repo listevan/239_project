@@ -125,6 +125,46 @@ def test_load_results_ungraded_guard():
             assert "grade.py" in str(e)
         assert an.load_results(d, allow_ungraded=True)["correct"].isna().sum() == 1
 
+def test_calls_table_semantics():
+    df = synth(n_problems=2, n=2, tags=("tool_rl",))
+    d = df[df.condition == "env_denied"].copy()
+    # four samples: 0 calls, 1 call (denied, no retry), 3 calls (denied, 2 retries), 6 calls
+    d["n_calls"] = [0, 1, 3, 6]; d["n_denied"] = [0, 1, 3, 6]
+    t = an.calls_table(d).iloc[0]
+    assert t["called_pct"] == 75.0 and t["calls_total"] == 10 and t["denied_total"] == 10
+    assert t["calls_per_caller"] == round(10 / 3, 2)
+    assert t["retry_after_denial"] == round((0 + 2 + 5) / 3, 2) and t["retry_pct"] == round(200 / 3, 1)
+    assert [t[f"calls={k}"] for k in range(5)] == [1, 1, 0, 1, 0] and t["calls>=5"] == 1
+    # tool_on with a 4-call budget: 6 calls -> 2 denied -> 1 retry after the budget message
+    d["condition"] = "tool_on"; d["n_denied"] = [0, 0, 0, 2]
+    t = an.calls_table(d).iloc[0]
+    assert t["denied_total"] == 2 and t["retry_after_denial"] == 1.0 and t["retry_pct"] == 100.0
+    d["n_calls"] = 0; d["n_denied"] = 0
+    t = an.calls_table(d).iloc[0]
+    assert t["called_pct"] == 0.0 and np.isnan(t["calls_per_caller"]) and np.isnan(t["retry_after_denial"])
+    assert "called_pct" in an.summary(df).columns
+
+def test_file_stamp_provenance_and_dated_figure():
+    import re
+    from datetime import datetime, timedelta, timezone
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4}", an.file_stamp())
+    df = synth(n_problems=2, n=2)
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d)
+        t0 = datetime(2026, 10, 14, 20, 55, tzinfo=timezone.utc)
+        for i, tag in enumerate(("base", "text_rl")):
+            p = folder / f"{tag}__prompt_off__x.jsonl"; p.write_text("{}\n")
+            p.with_suffix(".meta.json").write_text(json.dumps(dict(finished_at=(t0 + timedelta(hours=i)).isoformat())))
+        (folder / "tool_rl__prompt_off__x.jsonl").write_text("{}\n")   # no meta: falls back to mtime (now)
+        cap = an.provenance(folder)
+        assert cap.startswith("3 arms generated " + t0.astimezone().strftime("%Y-%m-%d %H:%M") + " to ")
+        assert "; plotted " in cap
+        assert an.provenance(folder / "empty") == ""
+        out = folder / f"passk_main_{an.file_stamp()}.png"
+        fig = an.plot(df, ["base prompt_off"], ci=False, caption=cap, save=out)
+        assert out.stat().st_size > 1000
+        assert any(cap == txt.get_text() for txt in fig.texts)
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

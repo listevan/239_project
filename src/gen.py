@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -473,6 +474,9 @@ def main(argv=None):
     if args.allow_long:
         os.environ["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
     import torch  # type: ignore
+    if not torch.cuda.is_available():
+        sys.exit("no CUDA device is visible: this runtime has no GPU. Colab: Runtime > Change runtime type > GPU "
+                 "(VS Code: reconnect choosing a GPU runtime), then run again from the first cell.")
     from vllm import LLM, SamplingParams  # type: ignore
     dtype = args.dtype
     if dtype == "auto":
@@ -575,7 +579,8 @@ def main(argv=None):
         acc = sum(graded) / len(graded) if graded and len(graded) == len(recs) else None
         meta = dict(vars(args), condition=cond, template=template, dtype=dtype, grader=grader_name,
                     graded=acc is not None, n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
-                    pass1=acc, gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs))
+                    pass1=acc, gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs),
+                    finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
         meta_path(path).write_text(json.dumps(meta, indent=1))
         partial_path(path).unlink(missing_ok=True)
         print(f"   {'pass@1=%.3f' % acc if acc is not None else 'ungraded'}  "

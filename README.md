@@ -35,7 +35,7 @@ The full plan is in `docs/experiment1_plan.md`.
 ## Grade and analyze locally
 
 Trajectories reach the laptop through Google Drive for desktop (the `239_project`
-folder may sit anywhere up to three levels under My Drive; both the notebook and
+folder may sit anywhere up to five levels under My Drive; both the notebook and
 `report.py --run` find it) or through the zip cell at the bottom of the notebook.
 
 ```
@@ -46,8 +46,9 @@ uv run src/report.py --run math-1.5b --dataset math500   # grade + tables + figu
 `report.py --run` finds the folder under the synced Drive (or `$RESULTS_ROOT`, or
 `./results`), grades ungraded rows first (`src/grade.py`: math-verify in worker
 processes with a per-row timeout, slowest rows reported, graded rows skipped), then
-prints the summary, pass@k and verdicts and saves `passk_by_model.png` and
-`passk_main.png` next to the data. Pass a folder path instead of `--run` for an
+prints the summary, pass@k, tool-call and verdict tables and saves
+`passk_by_model_<date>.png` and `passk_main_<date>.png` next to the data, each
+captioned with when its arms were generated. Pass a folder path instead of `--run` for an
 unzipped download. In a notebook, `import analyze as an` gives `an.load_results`,
 `an.summary`, `an.passk_table`, `an.verdict` and `an.plot(df, ["model condition", ...])`.
 

@@ -51,7 +51,7 @@ class FakeSP:
 
 def install_stubs():
     torch = types.ModuleType("torch")
-    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, get_device_capability=lambda: (8, 0))
     vllm = types.ModuleType("vllm")
     vllm.LLM, vllm.SamplingParams = FakeLLM, FakeSP
     sys.modules["torch"], sys.modules["vllm"] = torch, vllm
@@ -88,6 +88,7 @@ def test_fresh_run_writes_every_arm_in_chunks():
         assert all(r["correct"] for r in recs)
         meta = json.load(open(out / "math500" / "base__prompt_off__qwen_math_nocode.meta.json"))
         assert meta["n_records"] == 10 and meta["n_resumed"] == 0 and meta["pass1"] == 1.0 and meta["chunk"] == 2
+        assert meta["finished_at"].endswith("+00:00") and meta["finished_at"][:4].isdigit()
         assert [len(c) for c in FakeLLM.calls] == [2, 2, 1, 2, 2, 1]  # chunks x conditions, one round each
         assert "all conditions already done" in run_main(out)
 

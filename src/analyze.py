@@ -4,6 +4,7 @@ Usage in a notebook:
     import analyze as an
     df = an.load_results("results/math-1.5b/math500")
     an.summary(df)                 # one row per (tag, condition)
+    an.calls_table(df)             # tool-call behaviour: how many called, how often, retries after a denial
     an.plot(df, ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off"])   # one panel
     an.plot(df, {"base": ["base prompt_off", "base tool_on"], "tool_rl": [...]})    # one panel per key
     an.plot_passk(df)              # older view: one panel per condition, models as lines
@@ -11,6 +12,7 @@ Usage in a notebook:
 """
 import json
 import math
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -135,6 +137,7 @@ def summary(df: pd.DataFrame) -> pd.DataFrame:
             no_boxed_pct=round(100 * (~g["boxed_present"]).mean(), 1),
             code_pct=round(100 * g["code_emitted"].mean(), 1),
             fake_out_pct=round(100 * (g["fake_outputs"] > 0).mean(), 1),
+            called_pct=round(100 * (g["n_calls"] > 0).mean(), 1),
             calls_mean=round(g["n_calls"].mean(), 2), denied_mean=round(g["n_denied"].mean(), 2),
             exec_err_mean=round(g["n_exec_err"].mean(), 2),
             arith_err_pct=round(100 * g["arith_wrong"].sum() / arith_n, 2) if arith_n else float("nan"),
@@ -197,6 +200,69 @@ def plot_passk(df: pd.DataFrame, title=None, ci=True, iters=300, facet=True):
     return fig
 
 
+def calls_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Tool-call behaviour per arm.
+
+    called_pct          % of samples with at least one intercepted python block
+    calls_total         all calls in the arm (sum over samples)
+    calls_per_caller    mean calls among the samples that called at all
+    denied_total        calls answered with a denial message
+    retry_after_denial  mean further calls after the first denial, among samples denied at least once.
+                        Once a call is denied every later call in that sample is denied too (prompt_off
+                        and env_denied deny all, tool_on denies everything past the budget), so this is
+                        n_denied - 1.
+    retry_pct           % of denied samples that called again anyway
+    calls=k             number of samples that made exactly k calls (5 and more pooled)
+    """
+    rows = []
+    for (tag, cond), g in df.groupby(["tag", "condition"]):
+        callers = g[g["n_calls"] > 0]
+        denied = g[g["n_denied"] > 0]
+        row = dict(tag=tag, condition=cond, samples=len(g),
+                   called_pct=round(100 * (g["n_calls"] > 0).mean(), 1),
+                   calls_total=int(g["n_calls"].sum()),
+                   calls_per_caller=round(float(callers["n_calls"].mean()), 2) if len(callers) else float("nan"),
+                   denied_total=int(g["n_denied"].sum()),
+                   retry_after_denial=round(float((denied["n_denied"] - 1).mean()), 2) if len(denied) else float("nan"),
+                   retry_pct=round(100 * float((denied["n_denied"] >= 2).mean()), 1) if len(denied) else float("nan"))
+        hist = g["n_calls"].clip(upper=5).value_counts()
+        for k in range(6):
+            row["calls>=5" if k == 5 else f"calls={k}"] = int(hist.get(k, 0))
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    out["_r"] = out["tag"].map({t: i for i, t in enumerate(ROLE_ORDER)}).fillna(9)
+    out["_c"] = out["condition"].map({c: i for i, c in enumerate(COND_ORDER)}).fillna(9)
+    return out.sort_values(["_c", "_r"]).drop(columns=["_r", "_c"]).reset_index(drop=True)
+
+
+def file_stamp() -> str:
+    """Local date and time for a figure filename, e.g. 2026-10-14_1530."""
+    return datetime.now().strftime("%Y-%m-%d_%H%M")
+
+
+def provenance(results_dir) -> str:
+    """One-line figure caption: when the arms in results_dir were generated (each arm's meta
+    finished_at, else the file's modification time), how many there are, and when the plot was made."""
+    paths = sorted(Path(results_dir).glob("*.jsonl")) if Path(results_dir).is_dir() else []
+    times = []
+    for p in paths:
+        t = None
+        m = p.with_suffix(".meta.json")
+        if m.exists():
+            try:
+                t = json.loads(m.read_text()).get("finished_at")
+            except (json.JSONDecodeError, OSError):
+                t = None
+        times.append((datetime.fromisoformat(t) if t else datetime.fromtimestamp(p.stat().st_mtime)).astimezone())
+    if not times:
+        return ""
+    lo, hi = min(times), max(times)
+    span = lo.strftime("%Y-%m-%d %H:%M")
+    if hi - lo >= timedelta(minutes=1):
+        span += " to " + hi.strftime("%Y-%m-%d %H:%M")
+    return f"{len(paths)} arms generated {span}; plotted {datetime.now():%Y-%m-%d %H:%M}"
+
+
 def _format_axis(ax, n_max):
     ks = ks_for(int(n_max))
     ax.set_xscale("log", base=2)
@@ -235,7 +301,7 @@ def _arm(line):
     return tag, cond
 
 
-def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None):
+def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None, caption=None):
     """Draw pass@k curves.
 
     lines  a list of "model condition" strings for one panel, or a dict {panel title: [lines]} for
@@ -244,7 +310,8 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
     color  "model" or "condition": what the color encodes. The other one sets the line style, but only
            when it varies within a panel.
     ci     shade a 95% bootstrap band over problems.
-    save   path of a PNG to write.
+    save   path of a PNG to write (use file_stamp() in the name to date it).
+    caption small gray line at the bottom, e.g. provenance(results_dir).
     Lines whose arm is not in df are listed and skipped.
     """
     import matplotlib.pyplot as plt
@@ -278,7 +345,11 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
             fig.suptitle(title, x=0.01, ha="left")
     if missing:
         print("not in results, skipped:", ", ".join(missing))
-    fig.tight_layout()
+    if caption:
+        fig.text(0.01, 0.004, caption, fontsize=7, color=GRAY, ha="left", va="bottom")
+        fig.tight_layout(rect=(0, 0.035, 1, 1))
+    else:
+        fig.tight_layout()
     if save:
         fig.savefig(save, bbox_inches="tight")
     return fig
