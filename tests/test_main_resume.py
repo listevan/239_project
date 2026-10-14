@@ -1,0 +1,145 @@
+"""End-to-end test of gen.main() with a stubbed vLLM (no GPU): chunked checkpoints, a crash
+mid-arm, and the resume that follows. Run: python tests/test_main_resume.py"""
+import contextlib
+import io
+import json
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+import gen  # noqa: E402
+
+N_PROBLEMS, N = 5, 2
+
+
+class Out:
+    finish_reason, stop_reason = "stop", "<|im_end|>"
+
+    def __init__(self, text):
+        self.text, self.token_ids = text, list(range(len(text.split())))
+
+
+class FakeLLM:
+    calls = []            # prompts of every generate() call
+    crash_on_call = None  # 1-based index of the call that raises
+
+    def __init__(self, **kw):
+        self.kw = kw
+
+    def get_tokenizer(self):
+        return lambda text, add_special_tokens=False: {"input_ids": text.split()}
+
+    def generate(self, prompts, params, use_tqdm=False):
+        FakeLLM.calls.append(list(prompts))
+        if FakeLLM.crash_on_call == len(FakeLLM.calls):
+            raise RuntimeError("simulated disconnect")
+        plist = params if isinstance(params, list) else [params] * len(prompts)
+        res = []
+        for prompt, p in zip(prompts, plist):
+            pid = prompt.split("PROBLEM ")[1].split()[0]  # the problem text carries its id
+            res.append(types.SimpleNamespace(outputs=[Out(f"So \\boxed{{{pid}}}<|im_end|>") for _ in range(p.n)]))
+        return res
+
+
+class FakeSP:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def install_stubs():
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    vllm = types.ModuleType("vllm")
+    vllm.LLM, vllm.SamplingParams = FakeLLM, FakeSP
+    sys.modules["torch"], sys.modules["vllm"] = torch, vllm
+    gen.load_problems = lambda name, n, seed: [
+        dict(id=f"p{i}", problem=f"PROBLEM p{i} find x", answer=f"p{i}", subject="s", level="1")
+        for i in range(N_PROBLEMS)]
+    gen.make_grader = lambda: ((lambda resp, gold: f"\\boxed{{{gold}}}" in resp), "stub")
+
+
+def run_main(out, conds="prompt_off,env_denied"):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        gen.main(["--model", "m/base", "--tag", "base", "--conditions", conds, "--n", str(N),
+                  "--chunk", "2", "--max-tokens", "64", "--out", str(out)])
+    return buf.getvalue()
+
+
+def records(path):
+    return [json.loads(l) for l in open(path)]
+
+
+def test_fresh_run_writes_every_arm_in_chunks():
+    install_stubs()
+    FakeLLM.calls, FakeLLM.crash_on_call = [], None
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        log = run_main(out)
+        assert "3 chunk(s) to run" in log and "chunk 3/3" in log
+        arms = sorted(p.name for p in (out / "math500").glob("*"))
+        assert arms == ["base__env_denied__qwen_math_tir.jsonl", "base__env_denied__qwen_math_tir.meta.json",
+                        "base__prompt_off__qwen_math_nocode.jsonl", "base__prompt_off__qwen_math_nocode.meta.json"]
+        recs = records(out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl")
+        assert [(r["problem_id"], r["sample_idx"]) for r in recs] == [(f"p{i}", j) for i in range(5) for j in range(2)]
+        assert all(r["correct"] for r in recs)
+        meta = json.load(open(out / "math500" / "base__prompt_off__qwen_math_nocode.meta.json"))
+        assert meta["n_records"] == 10 and meta["n_resumed"] == 0 and meta["pass1"] == 1.0 and meta["chunk"] == 2
+        assert [len(c) for c in FakeLLM.calls] == [2, 2, 1, 2, 2, 1]  # chunks x conditions, one round each
+        assert "all conditions already done" in run_main(out)
+
+
+def test_crash_mid_arm_then_resume():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.crash_on_call = [], 2  # chunk 1 lands, chunk 2 dies
+        try:
+            run_main(out)
+            raise AssertionError("expected the simulated crash")
+        except RuntimeError:
+            pass
+        arm = out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl"
+        partial = gen.partial_path(arm)
+        assert partial.exists() and not arm.exists() and not gen.meta_path(arm).exists()
+        assert sorted({r["problem_id"] for r in records(partial)}) == ["p0", "p1"]
+
+        FakeLLM.calls, FakeLLM.crash_on_call = [], None
+        log = run_main(out)
+        assert "resuming, 2 problems already on disk; 2 chunk(s) to run" in log
+        assert [len(c) for c in FakeLLM.calls] == [2, 1, 2, 2, 1]  # p2,p3 | p4, then the untouched arm
+        assert FakeLLM.calls[0][0].count("PROBLEM p2") == 1 and "PROBLEM p4" in FakeLLM.calls[1][0]
+        recs = records(arm)
+        assert [(r["problem_id"], r["sample_idx"]) for r in recs] == [(f"p{i}", j) for i in range(5) for j in range(2)]
+        meta = json.load(open(gen.meta_path(arm)))
+        assert meta["n_resumed"] == 2 and meta["n_records"] == 10
+        assert not partial.exists()
+        assert "all conditions already done" in run_main(out)
+
+
+def test_overwrite_discards_partial_and_redoes():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.crash_on_call = [], None
+        run_main(out, conds="prompt_off")
+        buf = io.StringIO()
+        FakeLLM.calls = []
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off", "--n", str(N),
+                      "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--overwrite"])
+        assert "1 chunk(s) to run" in buf.getvalue() and [len(c) for c in FakeLLM.calls] == [5]
+
+
+if __name__ == "__main__":
+    fails = 0
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn(); print("ok  ", name)
+            except Exception as e:  # noqa: BLE001
+                fails += 1; print("FAIL", name, repr(e))
+    sys.exit(1 if fails else 0)

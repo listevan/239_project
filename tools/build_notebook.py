@@ -221,7 +221,7 @@ from Drive. The first run of each model spends a few minutes downloading weights
 """
 
 RUN_SETUP = r"""
-import json, subprocess, sys, time, importlib
+import json, os, subprocess, sys, time, importlib
 from pathlib import Path
 sys.path.insert(0, "src")
 
@@ -289,14 +289,32 @@ def show(tag):
 def stream(cmd):
     # Relay the subprocess's stdout+stderr through the kernel: a line per tqdm refresh instead of
     # a carriage-return bar, so progress shows even when Colab does not mirror child output.
+    # The child runs in its own process group; the stop button kills the whole group (gen.py and
+    # vLLM's engine-core process), so nothing is left holding the GPU.
+    import signal
     env = dict(os.environ, TQDM_MININTERVAL="20", PYTHONUNBUFFERED="1")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-    while True:
-        chunk = proc.stdout.read1(65536)
-        if not chunk:
-            break
-        print(chunk.decode("utf-8", "replace").replace("\r", "\n"), end="", flush=True)
-    return proc.wait()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                            start_new_session=True)
+    try:
+        while True:
+            chunk = proc.stdout.read1(65536)
+            if not chunk:
+                break
+            print(chunk.decode("utf-8", "replace").replace("\r", "\n"), end="", flush=True)
+        return proc.wait()
+    except BaseException:
+        for sig, wait in ((signal.SIGTERM, 15), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(proc.pid, sig)
+                proc.wait(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+            except ProcessLookupError:
+                break
+        print(f"\n[interrupted] killed pid {proc.pid} and its children; finished arms and chunks are kept",
+              flush=True)
+        raise
 
 
 def run_model(tag):
