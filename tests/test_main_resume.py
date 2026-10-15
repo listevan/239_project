@@ -56,8 +56,8 @@ def install_stubs():
     vllm.LLM, vllm.SamplingParams = FakeLLM, FakeSP
     sys.modules["torch"], sys.modules["vllm"] = torch, vllm
     gen.load_problems = lambda name, n, seed: [
-        dict(id=f"p{i}", problem=f"PROBLEM p{i} find x", answer=f"p{i}", subject="s", level="1")
-        for i in range(N_PROBLEMS)]
+        dict(id=f"p{i}", problem=f"PROBLEM p{i} find x", answer=f"p{i}", subject=name, level="1")
+        for i in range(N_PROBLEMS)][:n or N_PROBLEMS]
     gen.make_grader = lambda: ((lambda resp, gold: f"\\boxed{{{gold}}}" in resp), "stub")
 
 
@@ -168,6 +168,31 @@ def test_no_grade_then_local_grade():
         with contextlib.redirect_stdout(buf):
             assert gr.grade_dir(out / "math500", workers=0)[0]["graded_now"] == 0  # idempotent
         assert an.load_results(out / "math500")["correct"].dtype == bool
+
+def test_multi_dataset_one_model_load():
+    install_stubs()
+    FakeLLM.calls, FakeLLM.crash_on_call = [], None
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off",
+                      "--dataset", "math500,aime24:3:1", "--n", str(N), "--chunk", "0", "--max-tokens", "64",
+                      "--out", str(out), "--no-grade"])
+        log = buf.getvalue()
+        assert log.count("loaded m/base") == 1 and "todo=math500/prompt_off, aime24/prompt_off" in log
+        a = records(out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl")
+        b = records(out / "aime24" / "base__prompt_off__qwen_math_nocode.jsonl")
+        assert len(a) == N_PROBLEMS * N and len(b) == 3 * 1
+        assert {r["dataset"] for r in a} == {"math500"} and {r["dataset"] for r in b} == {"aime24"}
+        ma = json.load(open(gen.meta_path(out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl")))
+        mb = json.load(open(gen.meta_path(out / "aime24" / "base__prompt_off__qwen_math_nocode.jsonl")))
+        assert (ma["dataset"], ma["n"], ma["n_problems"]) == ("math500", N, N_PROBLEMS)
+        assert (mb["dataset"], mb["n"], mb["n_problems"], mb["n_problems_requested"]) == ("aime24", 1, 3, 3)
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off",
+                      "--dataset", "math500,aime24:3:1", "--n", str(N), "--out", str(out), "--no-grade"])
+        assert "all conditions already done" in buf.getvalue()
 
 if __name__ == "__main__":
     fails = 0

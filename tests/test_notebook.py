@@ -1,5 +1,5 @@
-"""Tests for the notebook's run-cell helpers (stream / status / arm_files), executed from the
-built notebook so the glue between the cells and gen.py is what gets tested."""
+"""Tests for the notebook's run-cell helpers (stream / status / arm_files / stale handling), executed
+from the built notebook so the glue between the cells and gen.py is what gets tested."""
 import contextlib
 import io
 import json
@@ -24,16 +24,43 @@ def notebook_cell(marker):
     return hits[0]
 
 
-def run_setup_namespace(out, conditions=("prompt_off", "env_denied", "tool_on"), n=2, n_problems=0):
+def run_setup_namespace(out, datasets=None, conditions=("prompt_off", "env_denied", "tool_on")):
+    datasets = datasets or {"math500": (0, 2)}
     ns = dict(
         PRESETS={"t": dict(max_model_len=4096, models={"base": dict(model="m/base", native="qwen_math_tir")})},
-        PRESET="t", OUT=str(out), DATASET="math500", CONDITIONS=list(conditions),
-        SHARED_TEMPLATE="qwen_math_nocode", N_SAMPLES=n, N_PROBLEMS=n_problems, OVERWRITE=False,
-        MAX_TOKENS=64, MAX_MODEL_LEN=4096, TEMPERATURE=0.6, TOP_P=0.95, SEED=0, MAX_CALLS=4,
-        GPU_MEM=0.9, CHUNK=2, ALLOW_LONG=False, DENIAL_TEXT=None, GRADE_ON_COLAB=False,
+        PRESET="t", OUT=str(out), RUN_ID=Path(out).name, DATASETS=datasets, CONDITIONS=list(conditions),
+        DATASET_SPEC=",".join(f"{k}:{p}:{n}" for k, (p, n) in datasets.items()),
+        SHARED_TEMPLATE="qwen_math_nocode", OVERWRITE=False, MAX_TOKENS=64, MAX_MODEL_LEN=4096,
+        TEMPERATURE=0.6, TOP_P=0.95, SEED=0, MAX_CALLS=4, GPU_MEM=0.9, CHUNK=2, ALLOW_LONG=False,
+        DENIAL_TEXT=None, GRADE_ON_COLAB=False,
     )
     exec(compile(notebook_cell("def stream(cmd)"), "run_setup_cell", "exec"), ns)
     return ns
+
+
+def rec(pid, k, tag="base", cond="prompt_off", correct=1):
+    return dict(tag=tag, condition=cond, problem_id=pid, sample_idx=k, correct=correct, truncated=False,
+                n_calls=0, n_denied=0)
+
+
+def test_config_cell_builds_run_id_spec_and_config_json():
+    with tempfile.TemporaryDirectory() as d:
+        ns = dict(RUNS=str(Path(d) / "runs"))
+        exec(compile(notebook_cell("DATASET_SPEC = "), "config_cell", "exec"), ns)
+        assert ns["SMOKE"] is True and ns["DATASET_SPEC"] == "math500:20:4,gsm_hard:10:4"
+        assert ns["RUN_ID"].endswith("_math-1.5b-smoke") and ns["RUN_ID"][:4].isdigit()
+        cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
+        assert cfg["datasets"] == {"math500": [20, 4], "gsm_hard": [10, 4]} and cfg["run_id"] == ns["RUN_ID"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exec(compile(notebook_cell("DATASET_SPEC = ").replace("SMOKE = True", "SMOKE = False"), "config_cell", "exec"),
+                 dict(RUNS=str(Path(d) / "runs"), RUN_ID_OVERRIDE=None))
+        assert "runs on Drive: " + ns["RUN_ID"] in buf.getvalue()
+        ns2 = dict(RUNS=str(Path(d) / "runs"))
+        src = notebook_cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace("MAX_TOKENS = 1024", "MAX_TOKENS = 999")
+        with contextlib.redirect_stdout(buf):
+            exec(compile(src, "config_cell", "exec"), ns2)
+        assert "DIFFERS in ['max_tokens']" in buf.getvalue()
 
 
 def test_stream_relays_output_and_exit_code():
@@ -74,32 +101,33 @@ def test_stream_interrupt_kills_process_group():
             raise AssertionError(f"pid {p} still alive after interrupt")
 
 
-def test_arm_files_match_gen_naming_and_status_reads_meta():
+def test_arm_files_status_per_dataset():
     import gen
     with tempfile.TemporaryDirectory() as d:
-        out = Path(d) / "run"
-        ns = run_setup_namespace(out, n=2)
-        rows = ns["arm_files"]("base")
+        out = Path(d) / "2026-10-15_t"
+        ns = run_setup_namespace(out, datasets={"math500": (0, 2), "gsm_hard": (10, 2)})
+        rows = ns["arm_files"]("base", "gsm_hard")
         assert [r[0] for r in rows] == ["prompt_off", "env_denied", "tool_on"]
-        assert rows[0][1].name == "base__prompt_off__qwen_math_nocode.jsonl"
+        assert rows[0][1] == out / "gsm_hard" / "base__prompt_off__qwen_math_nocode.jsonl"
         assert rows[1][1].name == "base__env_denied__qwen_math_tir.jsonl"
         assert rows[1][2] == gen.meta_path(rows[1][1]) and rows[1][3] == gen.partial_path(rows[1][1])
-        (out / "math500").mkdir(parents=True)
+        (out / "math500").mkdir(parents=True); (out / "gsm_hard").mkdir()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            assert ns["status"]("base") == 3  # nothing on disk
-        rec = lambda pid, sidx: dict(problem_id=pid, sample_idx=sidx, correct=1)  # noqa: E731
-        gen.write_jsonl(rows[0][3], [rec("p0", 0), rec("p0", 1), rec("p1", 0)])
-        gen.write_jsonl_atomic(rows[1][1], [rec("p0", 0), rec("p0", 1)])
-        rows[1][2].write_text(json.dumps(dict(pass1=1.0, n=2, n_problems=1, gen_seconds=60)))
+            assert ns["status"]("base") == 6  # nothing on disk, two datasets
+        m = ns["arm_files"]("base", "math500")
+        gen.write_jsonl(m[0][3], [rec("p0", 0), rec("p0", 1), rec("p1", 0)])
+        gen.write_jsonl_atomic(m[1][1], [rec("p0", 0, cond="env_denied"), rec("p0", 1, cond="env_denied")])
+        m[1][2].write_text(json.dumps(dict(pass1=1.0, n=2, n_problems=1, gen_seconds=60, chunk=100)))
+        g = ns["arm_files"]("base", "gsm_hard")
+        gen.write_jsonl_atomic(g[2][1], [rec("g0", 0, cond="tool_on"), rec("g0", 1, cond="tool_on")])
+        g[2][2].write_text(json.dumps(dict(pass1=None, n=4, n_problems=10, gen_seconds=60, chunk=100)))
         with contextlib.redirect_stdout(buf):
-            assert ns["status"]("base") == 2  # one done, one partial, one missing
+            assert ns["status"]("base") == 4  # math500: partial, done, missing; gsm_hard: missing, missing, done
         txt = buf.getvalue()
-        assert "partial  2 problems checkpointed" in txt and "done     pass@1=1.000" in txt and "missing" in txt
-        ns["N_SAMPLES"] = 4
-        with contextlib.redirect_stdout(buf):
-            ns["status"]("base")
-        assert "different N_SAMPLES" in buf.getvalue()
+        assert "base     math500   prompt_off  partial  2 problems checkpointed" in txt
+        assert "base     math500   env_denied  done     pass@1=1.000" in txt
+        assert "base     gsm_hard  tool_on     done     ungraded  n=4" in txt and "different problems/samples" in txt
 
 
 def test_stale_files_are_flagged_quarantined_and_excluded():
@@ -107,25 +135,23 @@ def test_stale_files_are_flagged_quarantined_and_excluded():
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "run"
         folder = out / "math500"; folder.mkdir(parents=True)
-        ns = run_setup_namespace(out, n=2)
-        rec = lambda tag, cond, pid, sidx: dict(tag=tag, condition=cond, problem_id=pid, sample_idx=sidx,  # noqa: E731
-                                                correct=1, truncated=False, n_calls=0, n_denied=0)
+        ns = run_setup_namespace(out)
         cur = folder / "base__prompt_off__qwen_math_nocode.jsonl"
-        gen.write_jsonl_atomic(cur, [rec("base", "prompt_off", "p0", 0), rec("base", "prompt_off", "p0", 1)])
+        gen.write_jsonl_atomic(cur, [rec("p0", 0), rec("p0", 1)])
         gen.meta_path(cur).write_text(json.dumps(dict(pass1=1.0, n=2, n_problems=1, gen_seconds=1, chunk=100)))
         old = folder / "base__prompt_off__qwen_math_cot.jsonl"  # last week's run, other template
-        gen.write_jsonl_atomic(old, [rec("base", "prompt_off", "p0", 0), rec("base", "prompt_off", "p0", 1)])
+        gen.write_jsonl_atomic(old, [rec("p0", 0), rec("p0", 1)])
         gen.meta_path(old).write_text(json.dumps(dict(pass1=0.5, n=2, n_problems=1, gen_seconds=1)))
         oldv = folder / "base__tool_on__qwen_math_tir.jsonl"    # same name as now, older gen.py
-        gen.write_jsonl_atomic(oldv, [rec("base", "tool_on", "p0", 0), rec("base", "tool_on", "p0", 1)])
+        gen.write_jsonl_atomic(oldv, [rec("p0", 0, cond="tool_on"), rec("p0", 1, cond="tool_on")])
         gen.meta_path(oldv).write_text(json.dumps(dict(pass1=0.5, n=2, n_problems=1, gen_seconds=1)))
         (folder / "passk.png").write_bytes(b"x")
 
-        stale = {f.name for f, _ in ns["stale_files"]()}
+        stale = {f.name for f, _ in ns["stale_files"]("math500")}
         assert stale == {old.name, gen.meta_path(old).name, oldv.name, gen.meta_path(oldv).name}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            df = ns["load_run"]()
+            df = ns["load_run"]("math500")
             ns["status"]("base")
         assert len(df) == 2 and set(df.file) == {cur.name}           # the duplicate arm is excluded
         assert "ignoring 2 file(s)" in buf.getvalue() and "stale file(s)" in buf.getvalue()
@@ -133,19 +159,18 @@ def test_stale_files_are_flagged_quarantined_and_excluded():
         with contextlib.redirect_stdout(buf):
             ns["move_stale"]()
         assert sorted(p.name for p in (folder / "old").iterdir()) == sorted(stale)
-        assert cur.exists() and (folder / "passk.png").exists() and not ns["stale_files"]()
+        assert cur.exists() and (folder / "passk.png").exists() and not ns["stale_files"]("math500")
         with contextlib.redirect_stdout(buf):
             assert ns["status"]("base") == 2  # tool_on is now missing, so it will be regenerated
+
 
 def test_status_and_show_handle_ungraded_rows():
     import gen
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "run"; folder = out / "math500"; folder.mkdir(parents=True)
-        ns = run_setup_namespace(out, n=2)
-        rows = ns["arm_files"]("base")
-        rec = lambda pid, k: dict(tag="base", condition="prompt_off", problem_id=pid, sample_idx=k, correct=None,  # noqa: E731
-                                  truncated=False, n_calls=0, n_denied=0)
-        gen.write_jsonl_atomic(rows[0][1], [rec("p0", 0), rec("p0", 1)])
+        ns = run_setup_namespace(out)
+        rows = ns["arm_files"]("base", "math500")
+        gen.write_jsonl_atomic(rows[0][1], [rec("p0", 0, correct=None), rec("p0", 1, correct=None)])
         rows[0][2].write_text(json.dumps(dict(pass1=None, graded=False, n=2, n_problems=1, gen_seconds=30, chunk=100)))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -155,10 +180,11 @@ def test_status_and_show_handle_ungraded_rows():
         assert "done     ungraded" in txt and "rows are ungraded" in txt
         assert "pass1" not in txt.split("rows are ungraded")[1]
         try:
-            ns["load_run"](require_graded=True)
+            ns["load_run"]("math500", require_graded=True)
             raise AssertionError("expected ValueError")
         except ValueError as e:
             assert "grade.py" in str(e)
+
 
 if __name__ == "__main__":
     fails = 0

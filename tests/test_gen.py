@@ -195,6 +195,20 @@ def test_to_record_ungraded():
     assert rec["correct"] is None and rec["arith_n"] is None and rec["arith_wrong"] is None
     assert rec["boxed"] == "156" and rec["boxed_present"] and rec["gold"] == "156" and rec["text"] == s.gen
 
+def test_dataset_specs_and_gsm_gold():
+    assert gen.parse_dataset_specs("math500", 0, 16) == [("math500", 0, 16)]
+    assert gen.parse_dataset_specs("math500:20:4, aime24::64,gsm_hard:300", 0, 16) == \
+        [("math500", 20, 4), ("aime24", 0, 64), ("gsm_hard", 300, 16)]
+    for bad in ("nope", "", "math500:x"):
+        try:
+            gen.parse_dataset_specs(bad, 0, 16)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert gen.gsm_gold(-9867630.0) == "-9867630" and gen.gsm_gold(3431580.0) == "3431580" and gen.gsm_gold(7) == "7"
+    assert gen.gsm_gold(2.5) is None and gen.gsm_gold(float("nan")) is None and gen.gsm_gold("x") is None
+    assert gen.gsm_gold(1e16) is None
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

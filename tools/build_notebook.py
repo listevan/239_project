@@ -44,13 +44,22 @@ tool). Same prompt, same decoding, pass@k plus an arithmetic error rate.
 The only published hint is CIR (2505.24480) Fig. 6: one 7B model, no text-RL
 control. This notebook adds the control and a direct skill metric.
 
-**What runs.** `src/gen.py` samples one checkpoint under each condition with vLLM
-and writes one JSONL per (model, condition) to Google Drive, checkpointing every
-`CHUNK` problems, so a disconnect costs at most one chunk. Colab does GPU work
-only: grading (math-verify) and the arithmetic check run on your laptop with
-`src/grade.py`, and `src/report.py` makes the tables and figures
+**What runs.** `src/gen.py` loads one checkpoint, samples it under each condition
+on each dataset, and writes one JSONL per (model, dataset, condition) to Google
+Drive, checkpointing every `CHUNK` problems, so a disconnect costs at most one
+chunk. Colab does GPU work only: grading (math-verify) and the arithmetic check run
+on your laptop with `src/report.py`, which also makes the tables and figures
 (`GRADE_ON_COLAB = True` grades here instead). Every model gets the same grid, so
 each condition is read as its own three-way comparison.
+
+**Where it goes.** One folder per run on Drive, named by date and preset:
+
+```
+239_project/runs/2026-10-15_math-1.5b/
+    config.json          the settings of this run
+    math500/  aime24/  aime25/  gsm_hard/      one JSONL + meta per arm
+    figures/  tables/   written by report.py, every file dated
+```
 
 | Condition | Prompt | If the model writes a code block |
 |---|---|---|
@@ -61,15 +70,17 @@ each condition is read as its own three-way comparison.
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
-Rough wall-clock on an A100 with vLLM, MATH-500 at 16 samples/problem:
+Rough wall-clock on an A100 with vLLM for the default plan (MATH-500 x 16,
+AIME24 + AIME25 x 64, 300 GSM-Hard x 16, about 17k samples per arm):
 
-| Preset | per arm | whole grid (9 arms) |
+| Preset | per model (3 arms) | whole grid |
 |---|---|---|
-| math-1.5b | 10 to 15 min | about 2 h |
-| math-7b | 30 to 45 min | 5 to 7 h |
+| math-1.5b | 1 to 1.5 h | 3 to 4 h |
+| math-7b | 3 to 4 h | 10 to 12 h, split it over sessions |
 
-Run the **smoke test** first (about 5 minutes). It exercises every code path on
-20 problems and tells you the pipeline is wired before you spend compute units.
+Run the **smoke test** first (about 15 minutes). It exercises every code path and
+dataset loader on a few problems and tells you the pipeline is wired before you
+spend compute units.
 """
 
 GPU_CHECK = r"""
@@ -104,12 +115,12 @@ print(subprocess.run([sys.executable, "-c", "import vllm, math_verify, datasets;
 DRIVE_MD = r"""
 ## 2. Where results go
 
-Results are written under `239_project/results/<run>/<dataset>/` on Drive so they
-survive the session. An existing `239_project` folder anywhere up to three levels
-under MyDrive is reused (up to five levels deep), so you can file it wherever you like in Drive; otherwise
+Runs are written under `239_project/runs/<date>_<preset>/` on Drive so they
+survive the session. An existing `239_project` folder anywhere up to five levels
+under MyDrive is reused, so you can file it wherever you like in Drive; otherwise
 `MyDrive/239_project` is created. Accept the Drive popup; if the path printed below
-starts with `/content/239_project_runs` the results are on the VM disk and die with
-it. Outside Colab this falls back to a local folder.
+starts with `/content/239_project_local` the results are on the VM disk and die
+with it. Outside Colab this falls back to a local folder.
 """
 
 DRIVE = r"""
@@ -129,20 +140,21 @@ if ON_COLAB:
     if PROJECT_DIR:
         ROOT = f"/content/drive/MyDrive/{PROJECT_DIR}"
     else:
-        hits = sorted((p for d in range(6) for p in glob.glob("/content/drive/MyDrive/" + "*/" * d + "239_project/results")
-                       if os.path.isdir(p)), key=lambda p: p.count("/"))
-        ROOT = os.path.dirname(hits[0]) if hits else "/content/drive/MyDrive/239_project"
+        hits = [p for d in range(6) for p in glob.glob("/content/drive/MyDrive/" + "*/" * d + "239_project")
+                if os.path.isdir(p)]
+        hits.sort(key=lambda p: (not os.path.isdir(f"{p}/runs"), p.count("/")))   # one that already has runs/ first
+        ROOT = hits[0] if hits else "/content/drive/MyDrive/239_project"
         if len(hits) > 1:
-            print("several 239_project/results folders on Drive, using the first:", *hits, sep="\n  ")
+            print("several 239_project folders on Drive, using the first:", *hits, sep="\n  ")
 else:
-    ROOT = os.path.abspath("239_project_runs")
-RESULTS = f"{ROOT}/results"
-os.makedirs(RESULTS, exist_ok=True)
+    ROOT = os.path.abspath("239_project_local")
+RUNS = f"{ROOT}/runs"
+os.makedirs(RUNS, exist_ok=True)
 WORK = "/content/239_project" if os.path.isdir("/content") else os.path.abspath("239_project_work")
 os.makedirs(f"{WORK}/src", exist_ok=True)
 os.chdir(WORK)
-print("results ->", RESULTS)
-print("work    ->", WORK)
+print("runs ->", RUNS)
+print("work ->", WORK)
 """
 
 FILES_MD = r"""
@@ -176,6 +188,19 @@ base model's and Oat-Zero's native context (CIR evaluated at 16k by extrapolatin
 `PLAIN_COT=True` adds the fourth, non-intercepting condition for a tie to CIR's
 numbers. `DENIAL_TEXT` overrides the message injected under `prompt_off` and
 `env_denied`.
+
+**Datasets.** `DATASETS` maps a name to (problems, samples per problem); 0 problems
+means the whole set. The interpreter is not load-bearing on MATH-500 at 1.5B (the
+smoke run and the ToRL paper agree, a few points), so MATH-500 is the compliance
+and format run, AIME and the MATH-500 level-5 subset are the hard end, and
+GSM-Hard (GSM8K with huge numbers, integer-answer problems only) is the set where
+Python helps enormously and the arithmetic metric has coverage. The gate before any
+verdict: tool_on minus env_denied for the tool-RL model must be large on that set.
+
+**Run id.** `RUN_ID` defaults to today's date plus the preset. Re-running the config
+cell on another day makes a new run folder; to resume or extend an earlier one (a
+disconnect, or adding a dataset), set `RUN_ID` to its name from the printed list.
+`config.json` records the settings and warns if they changed.
 """
 
 CONFIG = r"""
@@ -203,12 +228,20 @@ PRESETS = {
 }
 
 PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
-DATASET = "math500"        # math500 | aime24 | aime25
-SMOKE = True               # True: 20 problems x 4 samples x 1024 tokens, ~10 min. False: the real run.
+SMOKE = True               # True: a few problems per dataset, 4 samples, 1024 tokens, ~15 min. False: the real run.
 
-N_PROBLEMS = 20 if SMOKE else 0        # 0 = all 500 (AIME sets have 30)
-N_SAMPLES = 4 if SMOKE else 16         # raise to 32 or 64 for a sharper high-k tail
-MAX_TOKENS = 1024 if SMOKE else 3000
+# name -> (problems, samples per problem); 0 problems = the whole set
+#   math500   500 (level-5 subset reported separately)   aime24 / aime25   30 each
+#   gsm_hard  1016 integer-answer problems of GSM8K-with-huge-numbers; 300 is plenty for a pilot
+if SMOKE:
+    DATASETS = {"math500": (20, 4), "gsm_hard": (10, 4)}
+    MAX_TOKENS = 1024
+else:
+    DATASETS = {"math500": (0, 16), "aime24": (0, 64), "aime25": (0, 64), "gsm_hard": (300, 16)}
+    MAX_TOKENS = 3000
+RUN_ID = None              # None: today's date + preset, e.g. 2026-10-15_math-1.5b. To resume or extend an
+                           # earlier run, set its id from the list printed below.
+
 TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0   # CIR Fig. 6 settings
 MAX_CALLS = 4
 ALLOW_LONG = False         # True + MAX_MODEL_LEN=16384 mimics CIR's 16k budget on 4k-native models
@@ -221,10 +254,31 @@ CHUNK = 100                # problems per checkpoint; a disconnect loses at most
 OVERWRITE = False          # True regenerates arms that are already on Drive
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
+import datetime, json, os
 CONDITIONS = ["prompt_off", "env_denied", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
-RUN_NAME = f"{PRESET}{'-smoke' if SMOKE else ''}"
-OUT = f"{RESULTS}/{RUN_NAME}"
-print(RUN_NAME, "->", OUT)
+DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
+RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
+OUT = f"{RUNS}/{RUN_ID}"
+os.makedirs(RUNS, exist_ok=True)
+existing = sorted(d for d in os.listdir(RUNS) if os.path.isdir(f"{RUNS}/{d}"))
+print("runs on Drive:", ", ".join(existing) or "(none)")
+print("this run     :", RUN_ID, "->", OUT, "(resuming)" if RUN_ID in existing else "(new)")
+os.makedirs(OUT, exist_ok=True)
+CONFIG = dict(run_id=RUN_ID, preset=PRESET, smoke=SMOKE, datasets=DATASETS, conditions=CONDITIONS,
+              models=PRESETS[PRESET]["models"], max_tokens=MAX_TOKENS, max_model_len=MAX_MODEL_LEN,
+              temperature=TEMPERATURE, top_p=TOP_P, seed=SEED, max_calls=MAX_CALLS, shared_template=SHARED_TEMPLATE,
+              denial_text=DENIAL_TEXT, chunk=CHUNK, created=datetime.datetime.now().isoformat(timespec="seconds"))
+cfg_path = f"{OUT}/config.json"
+if os.path.exists(cfg_path):
+    old = json.load(open(cfg_path))
+    diff = [k for k in ("preset", "datasets", "conditions", "max_tokens", "max_model_len", "temperature", "top_p",
+                        "seed", "max_calls", "shared_template", "denial_text")
+            if json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
+    print(f"config.json from {old.get('created', '?')}" + (f"; DIFFERS in {diff}: finished arms keep the old settings, "
+          "set a new RUN_ID for a clean run" if diff else "; same settings"))
+else:
+    json.dump(CONFIG, open(cfg_path, "w"), indent=1)
+    print("wrote", cfg_path)
 """
 
 RUN_MD = r"""
@@ -240,12 +294,14 @@ for that model:
 | nothing | generated from scratch |
 
 So after a disconnect, reconnect, re-run cells 1 to 4 (install, Drive, code,
-config), then re-run the model cell that was going. Finished arms and finished
-chunks are never redone unless `OVERWRITE = True`. The three cells can run in any
-order, one at a time (one GPU). Each one ends with a quick pass@1 table read back
-from Drive. The first run of each model spends a few minutes downloading weights.
+config, with `RUN_ID` set to the run you were on if the date changed), then re-run
+the model cell that was going. Finished arms and finished chunks are never redone
+unless `OVERWRITE = True`. The model is loaded once and runs every dataset in
+`DATASETS`. The three cells can run in any order, one at a time (one GPU). Each one
+ends with a quick table per dataset read back from Drive. The first run of each
+model spends a few minutes downloading weights.
 
-`samples` in that table is rows, which is problems x `N_SAMPLES`. If it is a
+`samples` in those tables is rows, which is problems x samples. If it is a
 multiple of what you expect, a file from an older run with a different prompt
 template sits in the same folder and loads as the same arm. `status` flags this;
 `move_stale()` moves such files into `old/`.
@@ -257,9 +313,9 @@ from pathlib import Path
 sys.path.insert(0, "src")
 
 
-def arm_files(tag):
+def arm_files(tag, dataset):
     spec = PRESETS[PRESET]["models"][tag]
-    out = Path(OUT) / DATASET
+    out = Path(OUT) / dataset
     rows = []
     for cond in CONDITIONS:
         tmpl = SHARED_TEMPLATE if cond == "prompt_off" else ("qwen_math_cot" if cond == "plain_cot" else spec["native"])
@@ -281,16 +337,16 @@ def partial_problems(partial):
 DATA_SUFFIXES = (".jsonl", ".meta.json", ".jsonl.partial", ".jsonl.tmp")
 
 
-def expected_stems():
-    return {jsonl.stem for tag in PRESETS[PRESET]["models"] for _, jsonl, _, _ in arm_files(tag)}
+def expected_stems(dataset):
+    return {jsonl.stem for tag in PRESETS[PRESET]["models"] for _, jsonl, _, _ in arm_files(tag, dataset)}
 
 
-def stale_files():
-    # Data files in the run folder that the current config does not produce (an older template or
+def stale_files(dataset):
+    # Data files in a dataset folder that the current config does not produce (an older template or
     # model), plus arms written by an older gen.py (no "chunk" key in meta). They inflate the
     # tables (two files load as one arm) and block regeneration (gen.py sees the arm as done).
-    out = Path(OUT) / DATASET
-    exp = expected_stems()
+    out = Path(OUT) / dataset
+    exp = expected_stems(dataset)
     stale = []
     for f in sorted(out.iterdir()) if out.is_dir() else []:
         if not f.is_file() or not f.name.endswith(DATA_SUFFIXES):
@@ -304,84 +360,88 @@ def stale_files():
     return stale
 
 
-def move_stale():
+def move_stale(dataset=None):
     # Quarantine stale files into <run>/<dataset>/old/ (nothing is deleted).
-    out = Path(OUT) / DATASET
-    stale = stale_files()
-    if not stale:
-        print("nothing stale in", out); return
-    (out / "old").mkdir(exist_ok=True)
-    for f, why in stale:
-        if f.exists():
-            shutil.move(str(f), str(out / "old" / f.name))
-            print(f"moved {f.name} -> old/   ({why})")
+    for ds in ([dataset] if dataset else list(DATASETS)):
+        out = Path(OUT) / ds
+        stale = stale_files(ds)
+        if not stale:
+            print(f"{ds}: nothing stale"); continue
+        (out / "old").mkdir(exist_ok=True)
+        for f, why in stale:
+            if f.exists():
+                shutil.move(str(f), str(out / "old" / f.name))
+                print(f"{ds}: moved {f.name} -> old/   ({why})")
 
 
-def load_run(require_graded=False):
-    # Results of the current config only; files from other runs in the folder are reported and ignored.
-    # require_graded raises with instructions if rows still wait for src/grade.py.
+def load_run(dataset, require_graded=False):
+    # One dataset of this run, current config's files only; files from other runs in the folder are
+    # reported and ignored. require_graded raises with instructions if rows still wait for grading.
     import analyze as an
     importlib.reload(an)
-    df = an.load_results(f"{OUT}/{DATASET}", allow_ungraded=not require_graded)
-    exp = {f"{stem}.jsonl" for stem in expected_stems()}
-    stale = {f.name for f, _ in stale_files()}
+    df = an.load_results(f"{OUT}/{dataset}", allow_ungraded=not require_graded)
+    exp = {f"{stem}.jsonl" for stem in expected_stems(dataset)}
+    stale = {f.name for f, _ in stale_files(dataset)}
     stray = sorted((set(df.file) - exp) | (set(df.file) & stale))
     if stray:
-        print("ignoring", len(stray), "file(s) from another run or notebook version:", ", ".join(stray))
+        print(f"{dataset}: ignoring", len(stray), "file(s) from another run or notebook version:", ", ".join(stray))
         print("run move_stale() to quarantine them")
     return df[~df.file.isin(stray)].copy()
 
 
 def status(tag):
-    # What Drive holds for this model. Returns how many arms still need generation.
+    # What Drive holds for this model, per dataset. Returns how many arms still need generation.
     missing = 0
-    for cond, jsonl, meta, partial in arm_files(tag):
-        if meta.exists():
-            m = json.load(open(meta))
-            acc = "ungraded" if m.get("pass1") is None else f"pass@1={m['pass1']:.3f}"
-            note = f"done     {acc}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
-            if m["n"] != N_SAMPLES or (N_PROBLEMS and m["n_problems"] != N_PROBLEMS):
-                note += "   <- written with a different N_SAMPLES/N_PROBLEMS; set OVERWRITE=True or change RUN_NAME"
-            if "chunk" not in m:
-                note += "   <- older notebook version; run move_stale(), then re-run this cell"
-        elif partial.exists():
-            note = f"partial  {partial_problems(partial)} problems checkpointed, will resume"
-            missing += 1
-        else:
-            note = "missing"
-            missing += 1
-        print(f"  {tag:8s} {cond:11s} {note}")
-    n_stale = len({f for f, _ in stale_files()})
-    if n_stale:
-        print(f"  ! {n_stale} stale file(s) from another run in this folder: run move_stale() first")
+    for ds, (n_prob, n_samp) in DATASETS.items():
+        for cond, jsonl, meta, partial in arm_files(tag, ds):
+            if meta.exists():
+                m = json.load(open(meta))
+                acc = "ungraded" if m.get("pass1") is None else f"pass@1={m['pass1']:.3f}"
+                note = f"done     {acc}  n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
+                if m["n"] != n_samp or (n_prob and m["n_problems"] != n_prob):
+                    note += "   <- written with different problems/samples; set OVERWRITE=True or a new RUN_ID"
+                if "chunk" not in m:
+                    note += "   <- older notebook version; run move_stale(), then re-run this cell"
+            elif partial.exists():
+                note = f"partial  {partial_problems(partial)} problems checkpointed, will resume"
+                missing += 1
+            else:
+                note = "missing"
+                missing += 1
+            print(f"  {tag:8s} {ds:9s} {cond:11s} {note}")
+        n_stale = len({f for f, _ in stale_files(ds)})
+        if n_stale:
+            print(f"  ! {ds}: {n_stale} stale file(s) from another run in this folder: run move_stale() first")
     return missing
 
 
 def show(tag):
     import analyze as an
-    try:
-        df = load_run()
-    except FileNotFoundError:
-        print("no results yet"); return
-    d = df[df.tag == tag]
-    if d.empty:
-        print(f"no finished arms for {tag} yet"); return
-    graded = d["correct"].notna().all()
-    if not graded:
-        print("rows are ungraded: pass@1 appears after  python src/grade.py <this folder>  on your laptop")
-    aggs = dict(samples=("correct", "size"), problems=("problem_id", "nunique"), trunc=("truncated", "mean"),
-                called=("n_calls", lambda s: (s > 0).mean()), calls_total=("n_calls", "sum"),
-                calls=("n_calls", "mean"), denied=("n_denied", "mean"))
-    if graded:
-        d = d.assign(correct=d["correct"].astype(float))
-        aggs = dict(samples=aggs["samples"], problems=aggs["problems"], pass1=("correct", "mean"),
-                    **{k: v for k, v in aggs.items() if k not in ("samples", "problems")})
-    tbl = d.groupby("condition").agg(**aggs).round(3)
-    tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index])
-    try:
-        display(tbl)
-    except NameError:
-        print(tbl.to_string())
+    for ds in DATASETS:
+        try:
+            df = load_run(ds)
+        except FileNotFoundError:
+            print(f"{tag} / {ds}: no results yet"); continue
+        d = df[df.tag == tag]
+        if d.empty:
+            print(f"{tag} / {ds}: no finished arms yet"); continue
+        graded = d["correct"].notna().all()
+        if not graded:
+            print(f"{tag} / {ds}: rows are ungraded, pass@1 appears after report.py on your laptop")
+        aggs = dict(samples=("correct", "size"), problems=("problem_id", "nunique"), trunc=("truncated", "mean"),
+                    called=("n_calls", lambda s: (s > 0).mean()), calls_total=("n_calls", "sum"),
+                    calls=("n_calls", "mean"), denied=("n_denied", "mean"))
+        if graded:
+            d = d.assign(correct=d["correct"].astype(float))
+            aggs = dict(samples=aggs["samples"], problems=aggs["problems"], pass1=("correct", "mean"),
+                        **{k: v for k, v in aggs.items() if k not in ("samples", "problems")})
+        tbl = d.groupby("condition").agg(**aggs).round(3)
+        tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index])
+        tbl.index.name = f"{tag} / {ds}"
+        try:
+            display(tbl)
+        except NameError:
+            print(tbl.to_string())
 
 
 def stream(cmd):
@@ -417,7 +477,7 @@ def stream(cmd):
 
 def run_model(tag):
     spec = PRESETS[PRESET]["models"][tag]
-    print(f"[{tag}] {spec['model']}  ->  {OUT}/{DATASET}")
+    print(f"[{tag}] {spec['model']}  ->  {OUT}")
     if status(tag) == 0 and not OVERWRITE:
         print(f"[{tag}] every arm is already on Drive, loading instead of regenerating")
     elif not shutil.which("nvidia-smi"):
@@ -429,7 +489,7 @@ def run_model(tag):
                "--model", spec["model"], "--tag", tag,
                "--conditions", ",".join(CONDITIONS),
                "--shared-template", SHARED_TEMPLATE, "--native-template", spec["native"],
-               "--dataset", DATASET, "--n-problems", str(N_PROBLEMS), "--n", str(N_SAMPLES),
+               "--dataset", DATASET_SPEC,
                "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
                "--temperature", str(TEMPERATURE), "--top-p", str(TOP_P), "--seed", str(SEED),
                "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--chunk", str(CHUNK), "--out", OUT]
@@ -471,16 +531,19 @@ cells below stop with a message. Grade and analyze on your laptop instead:
 
 ```
 cd ~/projects/239_project
-uv sync                                                        # once
-uv run src/report.py --run math-1.5b-smoke --dataset math500
+uv sync                                         # once
+uv run src/report.py --list                     # runs visible through Google Drive for desktop
+uv run src/report.py --run <run id>             # every dataset: grade, tables, figures
 ```
 
-`report.py --run` finds the run under Google Drive for desktop (any
-`239_project/results` up to five levels under My Drive), grades the ungraded rows
-in place first (`src/grade.py`, skips rows already
-graded), then prints the tables and saves the two figures next to the data. Pass a
-folder instead of `--run` for an unzipped download from the last cell. The same functions are available in a local notebook via
-`import analyze as an` (`an.load_results`, `an.summary`, `an.plot`).
+`report.py` finds `239_project/runs` under Google Drive for desktop (any depth
+under My Drive), grades the ungraded rows in place first (`src/grade.py`, skips
+rows already graded), prints the summary, pass@k, tool-call and verdict tables per
+dataset (plus the MATH-500 level-5 subset), saves them as CSV under
+`<run>/tables/` and the figures under `<run>/figures/`, every file dated. Pass a
+run folder instead of `--run` for an unzipped download from the last cell. The
+same functions are available in a local notebook via `import analyze as an`
+(`an.load_results`, `an.summary`, `an.calls_table`, `an.plot`).
 
 With `GRADE_ON_COLAB = True` everything below runs here.
 
@@ -507,15 +570,17 @@ import pandas as pd
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 30)
 
 if GRADE_ON_COLAB:
-    df = load_run(require_graded=True)   # current config's files only; strays from older runs are listed and skipped
-    print(len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
-    STAMP, CAPTION = an.file_stamp(), an.provenance(f"{OUT}/{DATASET}")   # figures are dated and captioned
+    SHOW = list(DATASETS)[0]        # the dataset the cells below display; change and re-run for another
+    df = load_run(SHOW, require_graded=True)   # current config's files only; strays are listed and skipped
+    print(SHOW, ":", len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
+    STAMP, CAPTION = an.file_stamp(), f"{RUN_ID}: " + an.provenance(f"{OUT}/{SHOW}")   # figures dated + captioned
+    os.makedirs(f"{OUT}/figures", exist_ok=True)
     print(CAPTION)
     display(an.summary(df))
 else:
     df = None
     print("Generation done. Rows are ungraded here (GRADE_ON_COLAB = False). On your laptop:\n"
-          f"  cd ~/projects/239_project && uv run src/report.py --run {RUN_NAME} --dataset {DATASET}")
+          f"  cd ~/projects/239_project && uv run src/report.py --run {RUN_ID}")
 """
 
 PLOT = r"""
@@ -537,7 +602,7 @@ PLOT2 = r"""
 #   conditions: prompt_off, env_denied, tool_on
 # A list makes one panel. A dict {panel title: [lines]} makes one panel per key.
 # color="model" or "condition" picks what the color means; the other one sets the line style.
-# save=... writes a PNG next to the results (dated with STAMP); caption= puts the data's generation
+# save=... writes a PNG under <run>/figures/ (dated with STAMP); caption= puts the data's generation
 # dates under the plot. Lines not in the results are skipped with a note.
 
 # Figure 1: within each model, what does turning the tool off cost?
@@ -546,8 +611,8 @@ if df is not None:
         "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
         "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
         "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
-    }, color="condition", title=f"{RUN_NAME}: pass@k within each model",
-       save=f"{OUT}/{DATASET}/passk_by_model_{STAMP}.png", caption=CAPTION);
+    }, color="condition", title=f"{RUN_ID} / {SHOW}: pass@k within each model",
+       save=f"{OUT}/figures/passk_by_model_{SHOW}_{STAMP}.png", caption=CAPTION);
 """
 
 PLOT3 = r"""
@@ -557,8 +622,8 @@ if df is not None:
         "tool_rl prompt_off",
         "text_rl prompt_off", "text_rl tool_on",
         "base prompt_off",    "base tool_on",
-    ], title=f"{RUN_NAME}: tool-RL with the tool off vs control and base",
-       save=f"{OUT}/{DATASET}/passk_main_{STAMP}.png", caption=CAPTION);
+    ], title=f"{RUN_ID} / {SHOW}: tool-RL with the tool off vs control and base",
+       save=f"{OUT}/figures/passk_main_{SHOW}_{STAMP}.png", caption=CAPTION);
 """
 
 VERDICT = r"""
@@ -575,9 +640,9 @@ NEXT_MD = r"""
 - **Read within a column.** Each condition puts all three models under the same
   prompt and the same harness, so `verdict` compares them per condition.
   `env_denied` is the headline: every model asked for code, nobody gets to run it.
-- **prompt_off tests compliance too.** `calls_mean` on those rows is how often a
+- **prompt_off tests compliance too.** `called_pct` on those rows is how often a
   model wrote code after being told not to. A tool-RL model that cannot stop is
-  itself a finding.
+  itself a finding (ToRL: 84% in the smoke run, Oat-Zero 26%).
 - **Compare to text_rl, not just base.** RL alone sharpens pass@1 and can lower
   high-k pass@k (the sharpening confound). The question is whether tool-RL sits
   below text-RL.
@@ -586,10 +651,14 @@ NEXT_MD = r"""
 - **Arithmetic error rate** is the skill the interpreter replaces. Tool-RL above
   text-RL here, at the same accuracy, is atrophy of exactly that skill.
 
-Then: flip `SMOKE=False`, raise `N_SAMPLES` to 32 or 64 for the high-k tail, add
-`aime24`/`aime25` with `N_SAMPLES=64`, and move to `math-7b` (the CIR checkpoint
-reproduces Fig. 6 with the control added). Per-subject breakdowns are one
-`df.groupby(["tag","condition","subject"]).correct.mean()` away.
+- **Gate first.** On each dataset, tool_on minus env_denied for the tool-RL
+  model is how much the interpreter was carrying. Where that gap is small (MATH-500
+  at 1.5B), the set cannot test atrophy whatever the text-RL comparison says. Read
+  the verdict on the sets where the gap is large (GSM-Hard, AIME, MATH level 5).
+
+Then: flip `SMOKE=False` for the default plan, then `math-7b` (the CIR checkpoint
+makes several calls per problem and reproduces Fig. 6 with the control added).
+Per-subject breakdowns are one `df.groupby(["tag","condition","subject"]).correct.mean()` away.
 
 **Caveats.** `tool_on` executes model-written Python on this VM with a 10 s
 timeout; fine for Colab, not for a shared machine. The CIR prompt's turn placement
@@ -601,12 +670,12 @@ the table.
 DOWNLOAD = r"""
 # Without Google Drive for desktop: pull the run to your laptop as a zip. Every JSONL row
 # carries the full generation text plus call / denial / truncation counts. Uncomment, run,
-# unzip locally, then  python src/grade.py <run>/<dataset>  and  python src/report.py <run>/<dataset>.
+# unzip locally, then  uv run src/report.py <unzipped run folder>.
 #
 # from google.colab import files
 # import shutil
-# shutil.make_archive(f"/content/{RUN_NAME}", "zip", RESULTS, RUN_NAME)
-# files.download(f"/content/{RUN_NAME}.zip")
+# shutil.make_archive(f"/content/{RUN_ID}", "zip", RUNS, RUN_ID)
+# files.download(f"/content/{RUN_ID}.zip")
 """
 
 

@@ -63,59 +63,64 @@ def test_per_row_timeout_marks_incorrect_and_kills_workers():
     assert buf.getvalue().count("TIMEOUT") == 2
 
 
-def test_report_run_resolves_root_and_grades_first():
+def test_report_run_grades_then_writes_figures_and_tables():
     import os
     import report
     with tempfile.TemporaryDirectory() as d:
-        root = Path(d) / "results"; folder = root / "smoke" / "math500"; folder.mkdir(parents=True)
+        root = Path(d) / "runs"; run = root / "2026-10-15_t"; folder = run / "math500"; folder.mkdir(parents=True)
         for tag in ("base", "text_rl", "tool_rl"):
             path = folder / f"{tag}__prompt_off__qwen_math_nocode.jsonl"
             recs = [dict(row(f"p{i}", k, r"\boxed{7}" if (i + k) % 2 else r"\boxed{8}", "7"),
-                         tag=tag, template="t", model="m", subject="s", level="1", boxed_present=True, finish="eos",
-                         gen_tokens=10, rounds=1, code_emitted=False, fake_outputs=0, n_exec_err=0)
+                         tag=tag, template="t", model="m", subject="s", level=("5" if i % 2 else "1"), boxed_present=True,
+                         finish="eos", gen_tokens=10, rounds=1, code_emitted=False, fake_outputs=0, n_exec_err=0)
                     for i in range(4) for k in range(2)]
             gen.write_jsonl_atomic(path, recs)
             gen.meta_path(path).write_text(json.dumps(dict(n=2, n_problems=4, pass1=None, graded=False)))
-        old = os.environ.get("RESULTS_ROOT"); os.environ["RESULTS_ROOT"] = str(root)
+        old = os.environ.get("RUNS_ROOT"); os.environ["RUNS_ROOT"] = str(root)
         buf = io.StringIO()
         try:
-            assert report.find_results_root() == root
+            assert report.find_runs_root() == root
             with contextlib.redirect_stdout(buf):
-                report.main(["--run", "smoke", "--no-ci", "--workers", "2"])
+                report.main(["--list"])
+                report.main(["--run", "2026-10-15_t", "--no-ci", "--workers", "2"])
         finally:
             if old is None:
-                del os.environ["RESULTS_ROOT"]
+                del os.environ["RUNS_ROOT"]
             else:
-                os.environ["RESULTS_ROOT"] = old
+                os.environ["RUNS_ROOT"] = old
         out = buf.getvalue()
-        assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out and "figures ->" in out
-        mains, bys = list(folder.glob("passk_main_*.png")), list(folder.glob("passk_by_model_*.png"))
-        assert len(mains) == 1 and mains[0].stat().st_size > 1000 and len(bys) == 1
-        assert re.fullmatch(r"passk_main_\d{4}-\d{2}-\d{2}_\d{4}\.png", mains[0].name)
+        assert "2026-10-15_t  [math500]" in out
+        assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out
+        assert "level 5 only (2 problems)" in out and "written: " in out
+        figs = sorted(p.name for p in (run / "figures").iterdir()); tabs = sorted(p.name for p in (run / "tables").iterdir())
+        assert len(figs) == 3 and any(re.fullmatch(r"passk_main_math500_\d{4}-\d{2}-\d{2}_\d{4}\.png", f) for f in figs)
+        assert any(f.startswith("passk_main_math500-l5_") for f in figs) and any(f.startswith("passk_by_model_math500_") for f in figs)
+        assert len(tabs) == 6 and any(t.startswith("summary_math500_") for t in tabs) and any(t.startswith("calls_math500-l5_") for t in tabs)
         assert json.load(open(folder / "base__prompt_off__qwen_math_nocode.meta.json"))["graded"] is True
         try:
             report.main(["--run", "nope"])
             raise AssertionError("expected SystemExit")
         except SystemExit as e:
-            assert "no such folder" in str(e)
+            assert "no such run" in str(e)
 
-def test_find_results_root_searches_nested_drive_folders():
+
+def test_find_runs_root_searches_nested_drive_folders():
     import os
     import report
     with tempfile.TemporaryDirectory() as d:
         home = Path(d)
-        nested = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/UCLA (Jun 2026 onward)/239_project/results"
+        nested = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/UCLA (Jun 2026 onward)/Classes/CS 239/239_project/runs"
         nested.mkdir(parents=True)
-        old = os.environ.pop("RESULTS_ROOT", None)
+        old = os.environ.pop("RUNS_ROOT", None)
         try:
-            assert report.find_results_root(home=home) == nested
-            shallow = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/239_project/results"
+            assert report.find_runs_root(home=home) == nested
+            shallow = home / "Library/CloudStorage/GoogleDrive-x@y.z/My Drive/239_project/runs"
             shallow.mkdir(parents=True)
-            assert report.find_results_root(home=home) == shallow   # shallowest wins
-            assert report.find_results_root(home=home / "nowhere").name == "results"  # repo fallback
+            assert report.find_runs_root(home=home) == shallow   # shallowest wins
+            assert report.find_runs_root(home=home / "nowhere").name == "runs"  # repo fallback
         finally:
             if old is not None:
-                os.environ["RESULTS_ROOT"] = old
+                os.environ["RUNS_ROOT"] = old
 
 if __name__ == "__main__":
     fails = 0

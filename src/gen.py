@@ -152,6 +152,40 @@ def make_grader():
 
 
 # --------------------------------------------------------------------------- data
+DATASETS = ("math500", "aime24", "aime25", "gsm_hard")
+
+
+def gsm_gold(target):
+    """GSM-Hard targets are floats. Integer-valued ones become exact strings; the 303 non-integer
+    ones (and anything absurd) are dropped so grading stays exact."""
+    try:
+        f = float(target)
+    except (TypeError, ValueError):
+        return None
+    if f != f or abs(f) >= 1e15 or not f.is_integer():
+        return None
+    return str(int(f))
+
+
+def parse_dataset_specs(spec: str, n_problems: int, n: int):
+    """'math500,aime24::64,gsm_hard:300' -> [(name, n_problems, n_samples), ...].
+    Each item is name[:n_problems[:n_samples]]; an empty field takes the --n-problems / --n default."""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        f = part.split(":")
+        if f[0] not in DATASETS:
+            raise ValueError(f"unknown dataset {f[0]!r}; choose from {list(DATASETS)}")
+        np_ = int(f[1]) if len(f) > 1 and f[1] else n_problems
+        ns = int(f[2]) if len(f) > 2 and f[2] else n
+        out.append((f[0], np_, ns))
+    if not out:
+        raise ValueError("no dataset given")
+    return out
+
+
 def load_problems(name: str, n_problems: int, seed: int):
     from datasets import load_dataset  # type: ignore
     if name == "math500":
@@ -167,6 +201,16 @@ def load_problems(name: str, n_problems: int, seed: int):
         ds = load_dataset("math-ai/aime25", split="test")
         items = [dict(id=f"aime25-{r['id']}", problem=r["problem"], answer=str(r["answer"]),
                       subject="aime25", level="aime") for r in ds]
+    elif name == "gsm_hard":
+        # GSM8K with the numbers made large (PAL, Gao et al. 2022): easy reasoning, brutal arithmetic,
+        # the set where an interpreter is load-bearing. 1319 rows, 1016 with integer answers kept.
+        ds = load_dataset("reasoning-machines/gsm-hard", split="train")
+        items = []
+        for i, r in enumerate(ds):
+            gold = gsm_gold(r["target"])
+            if gold is not None:
+                items.append(dict(id=f"gsm_hard-{i}", problem=r["input"], answer=gold,
+                                  subject="gsm_hard", level="hard"))
     else:
         raise ValueError(f"unknown dataset {name}")
     if n_problems and n_problems < len(items):
@@ -302,7 +346,7 @@ def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
 
 
 # --------------------------------------------------------------------------- records
-def to_record(s: Sample, item, cond, template, model, tag, grade=None):
+def to_record(s: Sample, item, cond, template, model, tag, grade=None, dataset=None):
     """One JSONL row. With grade=None (gen.py --no-grade) `correct`, `arith_n` and `arith_wrong` are
     left null for src/grade.py to fill on another machine; everything else is generation-time data."""
     text = s.gen
@@ -313,7 +357,7 @@ def to_record(s: Sample, item, cond, template, model, tag, grade=None):
         correct = bool(grade(text, item["answer"]))
         a_n, a_wrong, _ = arith_check.check(strip_fenced(text))
     return dict(
-        model=model, tag=tag, condition=cond, template=template,
+        model=model, tag=tag, condition=cond, template=template, dataset=dataset,
         problem_id=item["id"], subject=item.get("subject"), level=item.get("level"),
         sample_idx=s.sidx, correct=correct, gold=item["answer"],
         boxed=last_boxed(text), boxed_present=last_boxed(text) is not None,
@@ -338,9 +382,11 @@ def parse_args(argv=None):
     p.add_argument("--plain-template", default="qwen_math_cot", help="prompt for plain_cot")
     p.add_argument("--denial-text", default=None,
                    help="override the message injected for prompt_off / env_denied")
-    p.add_argument("--dataset", default="math500", choices=["math500", "aime24", "aime25"])
-    p.add_argument("--n-problems", type=int, default=0, help="0 = all")
-    p.add_argument("--n", type=int, default=16, help="samples per problem")
+    p.add_argument("--dataset", default="math500",
+                   help="comma list of name[:n_problems[:n_samples]], e.g. math500,aime24::64,gsm_hard:300; "
+                        f"names: {', '.join(DATASETS)}. The model is loaded once for all of them.")
+    p.add_argument("--n-problems", type=int, default=0, help="default problems per dataset, 0 = all")
+    p.add_argument("--n", type=int, default=16, help="default samples per problem")
     p.add_argument("--max-tokens", type=int, default=3000)
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--allow-long", action="store_true",
@@ -438,11 +484,10 @@ def main(argv=None):
     for c in conds:
         if c not in CONDITIONS:
             sys.exit(f"unknown condition {c}; choose from {CONDITIONS}")
-    out_dir = Path(args.out) / args.dataset
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    def out_path(cond, template):
-        return out_dir / f"{args.tag}__{cond}__{template}.jsonl"
+    try:
+        specs = parse_dataset_specs(args.dataset, args.n_problems, args.n)
+    except ValueError as e:
+        sys.exit(str(e))
 
     def template_for(cond):
         if cond == "prompt_off":
@@ -451,20 +496,26 @@ def main(argv=None):
             return args.plain_template
         return args.native_template
 
-    todo = [(c, template_for(c)) for c in conds
-            if args.overwrite or not meta_path(out_path(c, template_for(c))).exists()]
-    if not todo:
+    def out_path(ds, cond, template):
+        return Path(args.out) / ds / f"{args.tag}__{cond}__{template}.jsonl"
+
+    plan = {}  # dataset -> [(cond, template), ...] still to generate
+    for ds, _, _ in specs:
+        arms = [(c, template_for(c)) for c in conds
+                if args.overwrite or not meta_path(out_path(ds, c, template_for(c))).exists()]
+        if arms:
+            plan[ds] = arms
+    if not plan:
         print("all conditions already done, nothing to do (use --overwrite to redo)")
         return
-    print(f"gen.py starting: {args.tag} {args.model}; todo={todo}", flush=True)
-    print(f"loading {args.dataset} from the HF hub...", flush=True)
-    items = load_problems(args.dataset, args.n_problems, args.seed)
+    print(f"gen.py starting: {args.tag} {args.model}; todo="
+          + ", ".join(f"{ds}/{c}" for ds, arms in plan.items() for c, _ in arms), flush=True)
     if args.no_grade:
         grade, grader_name = None, "none (grade with src/grade.py)"
     else:
         print("loading grader (math_verify)...", flush=True)
         grade, grader_name = make_grader()
-    print(f"{len(items)} problems from {args.dataset}; grader={grader_name}", flush=True)
+    print(f"grader={grader_name}", flush=True)
     print("importing torch + vllm (first time: a minute or two)...", flush=True)
 
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
@@ -510,12 +561,12 @@ def main(argv=None):
             outs.append((o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
         return outs
 
-    def run_arm(part, cond, template):
-        """Generate every sample for the (global_index, item) pairs in `part`; returns Samples."""
+    def run_arm(part, cond, template, n):
+        """Generate n samples for every (global_index, item) pair in `part`; returns Samples."""
         prompts = [build_prompt(template, it["problem"]) for _, it in part]
         samples = []
         if cond == "plain_cot":
-            res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS), use_tqdm=True)
+            res = llm.generate(prompts, sp(n, args.max_tokens, TEXT_STOPS), use_tqdm=True)
             for (pidx, _), prompt, r in zip(part, prompts, res):
                 for sidx, o in enumerate(r.outputs):
                     s = Sample(pidx, sidx, prompt)
@@ -524,7 +575,7 @@ def main(argv=None):
                         s.truncated, s.finish = True, "length"
                     samples.append(s)
             return samples
-        res = llm.generate(prompts, sp(args.n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
+        res = llm.generate(prompts, sp(n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
         first = []
         for (pidx, _), prompt, r in zip(part, prompts, res):
             for sidx, o in enumerate(r.outputs):
@@ -537,55 +588,63 @@ def main(argv=None):
         pool.shutdown(wait=True)
         return samples
 
-    order = {it["id"]: i for i, it in enumerate(items)}
-    for cond, template in todo:
-        t1 = time.time()
-        path = out_path(cond, template)
-        if args.overwrite:
+    for ds, np_, ns in specs:
+        if ds not in plan:
+            continue
+        print(f"loading {ds} from the HF hub...", flush=True)
+        items = load_problems(ds, np_, args.seed)
+        order = {it["id"]: i for i, it in enumerate(items)}
+        (Path(args.out) / ds).mkdir(parents=True, exist_ok=True)
+        print(f"{len(items)} problems from {ds}, {ns} samples each", flush=True)
+        for cond, template in plan[ds]:
+            t1 = time.time()
+            path = out_path(ds, cond, template)
+            if args.overwrite:
+                partial_path(path).unlink(missing_ok=True)
+            kept, _ = read_partial(path, ns)
+            kept = [r for r in kept if r["problem_id"] in order]
+            done_ids = {r["problem_id"] for r in kept}
+            chunks = plan_chunks(items, done_ids, args.chunk)
+            print(f"== {args.tag} / {ds} / {cond} / {template}: {len(items)} problems x {ns} samples"
+                  + (f"; resuming, {len(done_ids)} problems already on disk" if done_ids else "")
+                  + f"; {len(chunks)} chunk(s) to run", flush=True)
+            new_recs = []
+            for ci, part in enumerate(chunks, 1):
+                tc = time.time()
+                samples = run_arm(part, cond, template, ns)
+                tg = time.time()
+                if grade is not None:
+                    print(f"   grading {len(samples)} samples (math_verify, serial)...", flush=True)
+                recs = []
+                for i, smp in enumerate(samples, 1):
+                    recs.append(to_record(smp, items[smp.pidx], cond, template, args.model, args.tag, grade, dataset=ds))
+                    if grade is not None and i % 40 == 0:
+                        print(f"   graded {i}/{len(samples)}, {time.time() - tg:.0f}s", flush=True)
+                print(f"   writing {len(recs)} records to {partial_path(path).name}...", flush=True)
+                tw = time.time()
+                write_jsonl(partial_path(path), recs)
+                new_recs += recs
+                acc_txt = (f"pass@1={sum(r['correct'] for r in recs) / max(1, len(recs)):.3f}" if grade is not None
+                           else "ungraded")
+                print(f"   chunk {ci}/{len(chunks)}: {len(part)} problems, {acc_txt}, "
+                      f"{(time.time() - tc) / 60:.1f} min (write {time.time() - tw:.0f}s), checkpointed", flush=True)
+            gen_s = time.time() - t1
+            recs = kept + new_recs
+            recs.sort(key=lambda r: (order[r["problem_id"]], r["sample_idx"]))
+            print(f"   writing {path.name} + meta...", flush=True)
+            write_jsonl_atomic(path, recs)
+            graded = [r["correct"] for r in recs if r.get("correct") is not None]
+            acc = sum(graded) / len(graded) if graded and len(graded) == len(recs) else None
+            meta = dict(vars(args), dataset=ds, n=ns, n_problems_requested=np_, condition=cond, template=template,
+                        dtype=dtype, grader=grader_name, graded=acc is not None, n_problems=len(items),
+                        n_records=len(recs), n_resumed=len(done_ids), pass1=acc, gen_seconds=gen_s,
+                        total_gen_tokens=sum(r["gen_tokens"] for r in recs),
+                        finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            meta_path(path).write_text(json.dumps(meta, indent=1))
             partial_path(path).unlink(missing_ok=True)
-        kept, _ = read_partial(path, args.n)
-        kept = [r for r in kept if r["problem_id"] in order]
-        done_ids = {r["problem_id"] for r in kept}
-        chunks = plan_chunks(items, done_ids, args.chunk)
-        print(f"== {args.tag} / {cond} / {template}: {len(items)} problems x {args.n} samples"
-              + (f"; resuming, {len(done_ids)} problems already on disk" if done_ids else "")
-              + f"; {len(chunks)} chunk(s) to run", flush=True)
-        new_recs = []
-        for ci, part in enumerate(chunks, 1):
-            tc = time.time()
-            samples = run_arm(part, cond, template)
-            tg = time.time()
-            if grade is not None:
-                print(f"   grading {len(samples)} samples (math_verify, serial)...", flush=True)
-            recs = []
-            for i, smp in enumerate(samples, 1):
-                recs.append(to_record(smp, items[smp.pidx], cond, template, args.model, args.tag, grade))
-                if grade is not None and i % 40 == 0:
-                    print(f"   graded {i}/{len(samples)}, {time.time() - tg:.0f}s", flush=True)
-            print(f"   writing {len(recs)} records to {partial_path(path).name}...", flush=True)
-            tw = time.time()
-            write_jsonl(partial_path(path), recs)
-            new_recs += recs
-            acc_txt = (f"pass@1={sum(r['correct'] for r in recs) / max(1, len(recs)):.3f}" if grade is not None
-                       else "ungraded")
-            print(f"   chunk {ci}/{len(chunks)}: {len(part)} problems, {acc_txt}, "
-                  f"{(time.time() - tc) / 60:.1f} min (write {time.time() - tw:.0f}s), checkpointed", flush=True)
-        gen_s = time.time() - t1
-        recs = kept + new_recs
-        recs.sort(key=lambda r: (order[r["problem_id"]], r["sample_idx"]))
-        print(f"   writing {path.name} + meta...", flush=True)
-        write_jsonl_atomic(path, recs)
-        graded = [r["correct"] for r in recs if r.get("correct") is not None]
-        acc = sum(graded) / len(graded) if graded and len(graded) == len(recs) else None
-        meta = dict(vars(args), condition=cond, template=template, dtype=dtype, grader=grader_name,
-                    graded=acc is not None, n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
-                    pass1=acc, gen_seconds=gen_s, total_gen_tokens=sum(r["gen_tokens"] for r in recs),
-                    finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        meta_path(path).write_text(json.dumps(meta, indent=1))
-        partial_path(path).unlink(missing_ok=True)
-        print(f"   {'pass@1=%.3f' % acc if acc is not None else 'ungraded'}  "
-              f"truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
-              f"tokens={meta['total_gen_tokens'] / 1e6:.2f}M  {gen_s / 60:.1f} min -> {path}", flush=True)
+            print(f"   {'pass@1=%.3f' % acc if acc is not None else 'ungraded'}  "
+                  f"truncated={sum(r['truncated'] for r in recs) / len(recs):.2%}  "
+                  f"tokens={meta['total_gen_tokens'] / 1e6:.2f}M  {gen_s / 60:.1f} min -> {path}", flush=True)
 
 
 if __name__ == "__main__":

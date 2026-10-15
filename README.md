@@ -32,67 +32,42 @@ The full plan is in `docs/experiment1_plan.md`.
 5. Colab only generates (`GRADE_ON_COLAB = False`). Grade and analyze on your
    laptop, see below.
 
+## Where runs live
+
+One folder per run on Drive, named by date and preset, under `239_project/runs/`:
+
+```
+runs/2026-10-15_math-1.5b/
+    config.json                      the notebook settings that produced it
+    math500/ aime24/ aime25/ gsm_hard/   one <model>__<condition>__<template>.jsonl + .meta.json per arm
+    figures/  tables/                written by report.py, every file dated
+```
+
+`DATASETS` in the notebook maps each dataset to (problems, samples). The default
+plan is MATH-500 x 16 (compliance and format; the level-5 subset is reported on
+its own), AIME24 and AIME25 x 64 (the hard end), and 300 GSM-Hard problems x 16
+(GSM8K with huge numbers, where the interpreter is load-bearing). `RUN_ID`
+defaults to today's date plus the preset; set it to an existing run to resume or
+extend one.
+
 ## Grade and analyze locally
 
 Trajectories reach the laptop through Google Drive for desktop (the `239_project`
 folder may sit anywhere up to five levels under My Drive; both the notebook and
-`report.py --run` find it) or through the zip cell at the bottom of the notebook.
+`report.py` find it) or through the zip cell at the bottom of the notebook.
 
 ```
-uv sync                                                  # once: .venv from pyproject.toml (uv.lock pins it)
-uv run src/report.py --run math-1.5b --dataset math500   # grade + tables + figures
+uv sync                                       # once: .venv from pyproject.toml (uv.lock pins it)
+uv run src/report.py --list                   # runs visible from this machine
+uv run src/report.py --run 2026-10-15_math-1.5b            # every dataset in the run
+uv run src/report.py --run 2026-10-15_math-1.5b --dataset gsm_hard
 ```
 
-`report.py --run` finds the folder under the synced Drive (or `$RESULTS_ROOT`, or
-`./results`), grades ungraded rows first (`src/grade.py`: math-verify in worker
-processes with a per-row timeout, slowest rows reported, graded rows skipped), then
-prints the summary, pass@k, tool-call and verdict tables and saves
-`passk_by_model_<date>.png` and `passk_main_<date>.png` next to the data, each
-captioned with when its arms were generated. Pass a folder path instead of `--run` for an
-unzipped download. In a notebook, `import analyze as an` gives `an.load_results`,
-`an.summary`, `an.passk_table`, `an.verdict` and `an.plot(df, ["model condition", ...])`.
-
-Rough A100 cost at MATH-500 x 16 samples for the nine-arm grid: 1.5B about two
-hours, 7B five to seven hours.
-
-## Presets
-
-| Preset | base | text-RL control | tool-RL | tool-RL prompt |
-|---|---|---|---|---|
-| `math-1.5b` | Qwen/Qwen2.5-Math-1.5B | sail/Qwen2.5-Math-1.5B-Oat-Zero | GAIR/ToRL-1.5B | ToRL Fig. 3 |
-| `math-7b` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | RUC-AIBOX/Qwen-Math-7B-CIR | CIR Fig. 5 |
-| `math-7b-torl` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | GAIR/ToRL-7B | ToRL Fig. 3 |
-| `general-7b-zerotir` | Qwen/Qwen2.5-7B | hkust-nlp/Qwen-2.5-7B-SimpleRL-Zoo | htxu91/zero-tir-7b-550step | Qwen-Math TIR (unverified) |
-
-Templates were checked on 2026-10-13 against the Oat-Zero model card, the ToRL
-paper (Fig. 3), the CIR paper (Fig. 5), and the Qwen2.5-Math card. The CIR prompt's
-placement in the system turn is an assumption.
-
-## Conditions
-
-Every model runs the whole grid, so each condition is its own three-way comparison.
-
-| Condition | Prompt | If the model writes a code block |
-|---|---|---|
-| `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial injected, nothing runs |
-| `env_denied` | the model's tool prompt | intercepted, denial injected, nothing runs |
-| `tool_on` | the model's tool prompt | executed with `python -I`, 10 s timeout, 4-call budget |
-| `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block (CIR's condition) |
-
-Tool prompts: ToRL's own for ToRL, the Qwen2.5-Math TIR prompt (same instruction
-sentence, chat format) for base and Oat-Zero, CIR's Fig. 5 text for the CIR
-checkpoint. The denial text is "No interpreter is available; the code was not
-executed. Continue reasoning without running code and give the final answer."
-Calls past the budget under `tool_on` get AdaTIR's "budget exceeded" message.
-
-## Local development
-
-```
-python -m venv .venv && . .venv/bin/activate
-pip install math-verify nbformat pandas numpy matplotlib
-python tests/test_gen.py           # no GPU needed
-python tools/build_notebook.py     # after editing src/
-```
-
-`gen.py --help` lists every knob. Result rows carry the full generation text, so
-any later metric can be computed without re-sampling.
+For each dataset, `report.py` grades ungraded rows in place first (`src/grade.py`:
+math-verify in worker processes with a per-row timeout, slowest rows reported,
+graded rows skipped), prints the summary, pass@k, tool-call and verdict tables,
+saves them as CSV under `<run>/tables/`, and saves `passk_by_model_<dataset>_<date>.png`
+and `passk_main_<dataset>_<date>.png` under `<run>/figures/`, each captioned with
+when its arms were generated. In a notebook, `import analyze as an` gives
+`an.load_results`, `an.summary`, `an.calls_table`, `an.passk_table`, `an.verdict`
+and `an.plot(df, ["model condition", ...])`.

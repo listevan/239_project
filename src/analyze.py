@@ -49,6 +49,8 @@ def load_results(results_dir, allow_ungraded=False) -> pd.DataFrame:
         frames.append(f)
     df = pd.concat(frames, ignore_index=True)
     df["arm"] = df["tag"] + " / " + df["condition"]
+    if "dataset" not in df.columns:
+        df["dataset"] = Path(results_dir).name
     n_un = int(df["correct"].isna().sum()) if "correct" in df else len(df)
     if n_un and not allow_ungraded:
         raise ValueError(f"{n_un} of {len(df)} records in {results_dir} are ungraded: "
