@@ -659,13 +659,16 @@ if df is not None:
 """
 
 PLOT3 = r"""
-# Figure 2: every model under env_denied (asked for code, denied), plus the base with the tool on
+# Figure 2: the three models under one tool-off condition, plus the base with the tool on.
+# Figure 3: the same under prompt_off. Figure 4: everyone with the tool (the dose check).
 if df is not None:
-    an.plot(df, [
-        "tool_rl env_denied", "text_rl env_denied", "base env_denied",
-        "base tool_on",
-    ], title=f"{RUN_ID} / {SHOW}: tool denied, tool-RL vs text-RL vs base",
-       save=f"{OUT}/figures/passk_main_{SHOW}_{STAMP}.png", caption=CAPTION);
+    for key, arms, ttl in [
+        ("denied",    ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"], "tool denied"),
+        ("promptoff", ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"], "told not to code"),
+        ("toolon",    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"], "with the tool"),
+    ]:
+        an.plot(df, arms, title=f"{RUN_ID} / {SHOW}: {ttl}, tool-RL vs text-RL vs base",
+                save=f"{OUT}/figures/passk_main_{key}_{SHOW}_{STAMP}.png", caption=CAPTION);
 """
 
 VERDICT = r"""

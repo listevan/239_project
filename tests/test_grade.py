@@ -93,8 +93,9 @@ def test_report_run_grades_then_writes_figures_and_tables():
         assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out
         assert "level 5 only (2 problems)" in out and "written: " in out
         figs = sorted(p.name for p in (run / "figures").iterdir()); tabs = sorted(p.name for p in (run / "tables").iterdir())
-        assert len(figs) == 3 and any(re.fullmatch(r"passk_main_math500_\d{4}-\d{2}-\d{2}_\d{4}\.png", f) for f in figs)
-        assert any(f.startswith("passk_main_math500-l5_") for f in figs) and any(f.startswith("passk_by_model_math500_") for f in figs)
+        assert len(figs) == 7 and any(re.fullmatch(r"passk_main_denied_math500_\d{4}-\d{2}-\d{2}_\d{4}\.png", f) for f in figs)
+        assert any(f.startswith("passk_main_promptoff_math500-l5_") for f in figs) and any(f.startswith("passk_by_model_math500_") for f in figs)
+        assert sum(f.startswith("passk_main_toolon_") for f in figs) == 2
         assert len(tabs) == 6 and any(t.startswith("summary_math500_") for t in tabs) and any(t.startswith("calls_math500-l5_") for t in tabs)
         assert json.load(open(folder / "base__prompt_off__qwen_math_nocode.meta.json"))["graded"] is True
         try:

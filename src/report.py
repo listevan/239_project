@@ -30,7 +30,17 @@ BY_MODEL = {
     "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
     "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
 }
-MAIN = ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"]
+# Three headline figures. Each tool-off one shows the three models under the same tool-off condition
+# plus the base with the tool on; the tool-on one is the dose check: are the two RL models comparable
+# when each has the interpreter?
+MAIN = {
+    "denied":    ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"],
+    "promptoff": ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"],
+    "toolon":    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"],
+}
+MAIN_TITLES = {"denied": "tool denied, tool-RL vs text-RL vs base",
+               "promptoff": "told not to code, tool-RL vs text-RL vs base",
+               "toolon": "with the tool, tool-RL vs text-RL vs base"}
 
 
 def find_runs_root(home=None):
@@ -78,11 +88,11 @@ def _report_frame(df, title, tag, stamp, cap, figs, tabs, ci, by_model):
                       save=p, caption=cap)
         plt.close(fig)
         written.append(p)
-    p = figs / f"passk_main_{tag}_{stamp}.png"
-    fig = an.plot(df, MAIN, ci=ci, title=f"{title}: tool denied, tool-RL vs text-RL vs base",
-                  save=p, caption=cap)
-    plt.close(fig)
-    written.append(p)
+    for key, arms in MAIN.items():
+        p = figs / f"passk_main_{key}_{tag}_{stamp}.png"
+        fig = an.plot(df, arms, ci=ci, title=f"{title}: {MAIN_TITLES[key]}", save=p, caption=cap)
+        plt.close(fig)
+        written.append(p)
     return written
 
 
