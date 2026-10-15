@@ -153,12 +153,11 @@ CODE_MD = r"""
 
 The repo is cloned onto this VM at `/content/239_project` (or pulled to the latest
 commit if it is already there), and `src/` goes on the path. The VM runs what is
-on GitHub, so push local edits before running. The repo is private, so a token
-is needed once: a fine-grained GitHub token with read access to this repo's
-contents, found in this order: the `GITHUB_TOKEN` environment variable, a Colab
-secret named `GITHUB_TOKEN`, or the file `github_token.txt` in the `239_project`
-folder on Drive (write it from Finder, Drive for desktop syncs it). Nothing here
-prints the token.
+on GitHub, so push local edits before running. The repo is public, so no token is
+needed. For a private fork, a fine-grained token with read access to the repo's
+contents is picked up from the `GITHUB_TOKEN` environment variable, a Colab
+secret of that name, or `github_token.txt` in the `239_project` folder on Drive;
+nothing here prints it.
 """
 
 CODE = r"""
