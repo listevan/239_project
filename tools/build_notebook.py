@@ -57,7 +57,7 @@ each condition is read as its own three-way comparison.
 ```
 239_project/runs/2026-10-15_math-1.5b/
     config.json          the settings of this run
-    aime24/  aime25/  gsm_hard/  math500_l5/   one JSONL + meta per arm
+    aime24/  aime25/         one JSONL + meta per arm (more datasets if you add them)
     figures/  tables/   written by report.py, every file dated
 ```
 
@@ -70,17 +70,16 @@ each condition is read as its own three-way comparison.
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
-Rough wall-clock on an A100 with vLLM for the default plan (AIME24 + AIME25 x 64,
-300 GSM-Hard x 16, 134 level-5 MATH problems x 16, about 11k samples per arm):
+Rough wall-clock on an A100 with vLLM for the default plan (AIME24 + AIME25 at
+64 samples, about 3.8k samples per arm, long solutions):
 
 | Preset | per model (3 arms) | whole grid |
 |---|---|---|
-| math-1.5b | 45 min to 1 h | 2 to 3 h |
-| math-7b | 2 to 3 h | 7 to 8 h, split it over sessions |
+| math-1.5b | 20 to 30 min | about 1 h |
+| math-7b | 1 to 1.5 h | 3 to 4 h |
 
-Run the **smoke test** first (about 15 minutes). It exercises every code path and
-dataset loader on a few problems and tells you the pipeline is wired before you
-spend compute units.
+Run the **smoke test** first (about 10 minutes). It exercises every code path on
+6 AIME problems and tells you the pipeline is wired before you spend compute units.
 """
 
 GPU_CHECK = r"""
@@ -190,13 +189,12 @@ numbers. `DENIAL_TEXT` overrides the message injected under `prompt_off` and
 `env_denied`.
 
 **Datasets.** `DATASETS` maps a name to (problems, samples per problem); 0 problems
-means the whole set. The interpreter is not load-bearing on MATH-500 at 1.5B (the
-smoke run and the ToRL paper agree, a few points), so the full set is off by
-default. AIME24 and AIME25 and the 134 level-5 MATH-500 problems are the hard end,
-and GSM-Hard (GSM8K with huge numbers, integer-answer problems only) is the set
-where Python helps enormously and the arithmetic metric has coverage. The gate
-before any verdict: tool_on minus env_denied for the tool-RL model must be large on
-that set. Add `"math500": (0, 16)` back for the full compliance run.
+means the whole set. The pilot is AIME24 plus AIME25, 60 problems at 64 samples:
+the hard end, where the interpreter should matter. The interpreter is not
+load-bearing on MATH-500 at 1.5B (the smoke run and the ToRL paper agree, a few
+points), so MATH-500 is off. GSM-Hard (GSM8K with huge numbers) and the level-5
+MATH-500 subset are one line each to add back. The gate before any verdict:
+tool_on minus env_denied for the tool-RL model must be large on the set.
 
 **Run id.** `RUN_ID` defaults to today's date plus the preset. Re-running the config
 cell on another day makes a new run folder; to resume or extend an earlier one (a
@@ -231,14 +229,16 @@ PRESETS = {
 PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
 SMOKE = True               # True: a few problems per dataset, 4 samples, 1024 tokens, ~15 min. False: the real run.
 
-# name -> (problems, samples per problem); 0 problems = the whole set
-#   aime24 / aime25   30 each, the hard end          gsm_hard   1016 integer-answer GSM8K-with-huge-numbers problems
-#   math500_l5        the 134 level-5 MATH-500 problems   math500   all 500 (not tool-load-bearing at 1.5B, off by default)
+# name -> (problems, samples per problem); 0 problems = the whole set. The pilot is AIME.
+#   aime24 / aime25   30 problems each, the hard end where the interpreter should matter
+# Available, off by default:  "gsm_hard": (300, 16)  GSM8K with huge numbers, 1016 integer-answer problems
+#                             "math500_l5": (0, 16)  the 134 level-5 MATH-500 problems
+#                             "math500": (0, 16)     all 500, not tool-load-bearing at 1.5B
 if SMOKE:
-    DATASETS = {"aime24": (6, 4), "gsm_hard": (10, 4), "math500_l5": (10, 4)}
+    DATASETS = {"aime24": (6, 4)}
     MAX_TOKENS = 1024
 else:
-    DATASETS = {"aime24": (0, 64), "aime25": (0, 64), "gsm_hard": (300, 16), "math500_l5": (0, 16)}
+    DATASETS = {"aime24": (0, 64), "aime25": (0, 64)}
     MAX_TOKENS = 3000
 RUN_ID = None              # None: today's date + preset, e.g. 2026-10-15_math-1.5b. To resume or extend an
                            # earlier run, set its id from the list printed below.

@@ -39,15 +39,15 @@ One folder per run on Drive, named by date and preset, under `239_project/runs/`
 ```
 runs/2026-10-15_math-1.5b/
     config.json                      the notebook settings that produced it
-    aime24/ aime25/ gsm_hard/ math500_l5/   one <model>__<condition>__<template>.jsonl + .meta.json per arm
+    aime24/ aime25/                  one <model>__<condition>__<template>.jsonl + .meta.json per arm
     figures/  tables/                written by report.py, every file dated
 ```
 
-`DATASETS` in the notebook maps each dataset to (problems, samples). The default
-plan is AIME24 and AIME25 x 64 (the hard end), 300 GSM-Hard problems x 16 (GSM8K
-with huge numbers, where the interpreter is load-bearing), and the 134 level-5
-MATH-500 problems x 16. The full MATH-500 (`math500`) is available but off by
-default: the interpreter is not load-bearing there at 1.5B. `RUN_ID` defaults to
+`DATASETS` in the notebook maps each dataset to (problems, samples). The pilot
+is AIME24 and AIME25 at 64 samples, the hard end where the interpreter should
+matter. Also available, one line each: `gsm_hard` (GSM8K with huge numbers,
+1016 integer-answer problems), `math500_l5` (the 134 level-5 problems) and
+`math500` (all 500; not tool-load-bearing at 1.5B). `RUN_ID` defaults to
 today's date plus the preset; set it to an existing run to resume or extend one.
 
 ## Grade and analyze locally

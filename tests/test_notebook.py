@@ -47,10 +47,10 @@ def test_config_cell_builds_run_id_spec_and_config_json():
     with tempfile.TemporaryDirectory() as d:
         ns = dict(RUNS=str(Path(d) / "runs"))
         exec(compile(notebook_cell("DATASET_SPEC = "), "config_cell", "exec"), ns)
-        assert ns["SMOKE"] is True and ns["DATASET_SPEC"] == "aime24:6:4,gsm_hard:10:4,math500_l5:10:4"
+        assert ns["SMOKE"] is True and ns["DATASET_SPEC"] == "aime24:6:4"
         assert ns["RUN_ID"].endswith("_math-1.5b-smoke") and ns["RUN_ID"][:4].isdigit()
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["datasets"] == {"aime24": [6, 4], "gsm_hard": [10, 4], "math500_l5": [10, 4]} and cfg["run_id"] == ns["RUN_ID"]
+        assert cfg["datasets"] == {"aime24": [6, 4]} and cfg["run_id"] == ns["RUN_ID"]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             exec(compile(notebook_cell("DATASET_SPEC = ").replace("SMOKE = True", "SMOKE = False"), "config_cell", "exec"),
