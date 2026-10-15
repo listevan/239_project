@@ -420,7 +420,9 @@ def parse_args(argv=None):
     p.add_argument("--gpu-mem", type=float, default=0.90)
     p.add_argument("--dtype", default="auto")
     p.add_argument("--out", required=True, help="results directory")
-    p.add_argument("--overwrite", action="store_true", help="redo finished arms and discard partial files")
+    p.add_argument("--overwrite", action="store_true", help="redo every finished arm and discard partial files")
+    p.add_argument("--overwrite-conditions", default="",
+                   help="comma list of conditions to redo even if finished (others are kept), e.g. prose_only")
     p.add_argument("--no-grade", action="store_true",
                    help="write raw trajectories only (correct/arith fields null); grade later with src/grade.py")
     p.add_argument("--chunk", type=int, default=100,
@@ -518,10 +520,18 @@ def main(argv=None):
     def out_path(ds, cond, template):
         return Path(args.out) / ds / f"{args.tag}__{cond}__{template}.jsonl"
 
+    redo = {c.strip() for c in args.overwrite_conditions.split(",") if c.strip()}
+    for c in redo:
+        if c not in CONDITIONS:
+            sys.exit(f"unknown condition in --overwrite-conditions: {c}")
+
+    def force(cond):
+        return args.overwrite or cond in redo
+
     plan = {}  # dataset -> [(cond, template), ...] still to generate
     for ds, _, _ in specs:
         arms = [(c, template_for(c)) for c in conds
-                if args.overwrite or not meta_path(out_path(ds, c, template_for(c))).exists()]
+                if force(c) or not meta_path(out_path(ds, c, template_for(c))).exists()]
         if arms:
             plan[ds] = arms
     if not plan:
@@ -630,7 +640,7 @@ def main(argv=None):
                 print(f"   prose_only: {len(fence_ids)} backtick tokens banned", flush=True)
             else:
                 arm_bias["logit_bias"] = None
-            if args.overwrite:
+            if force(cond):
                 partial_path(path).unlink(missing_ok=True)
             kept, _ = read_partial(path, ns)
             kept = [r for r in kept if r["problem_id"] in order]
