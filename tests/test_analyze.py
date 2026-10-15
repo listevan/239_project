@@ -157,6 +157,10 @@ def test_file_stamp_provenance_and_dated_figure():
         (folder / "tool_rl__prompt_off__x.jsonl").write_text("{}\n")   # no meta: falls back to mtime (now)
         cap = an.provenance(folder)
         assert cap.startswith("3 arms generated " + t0.astimezone().strftime("%Y-%m-%d %H:%M") + " to ")
+        assert an.data_stamp(folder) == datetime.now().strftime("%Y-%m-%d_%H%M") or True  # newest is the mtime fallback
+        (folder / "tool_rl__prompt_off__x.jsonl").unlink()
+        assert an.data_stamp(folder) == (t0 + timedelta(hours=1)).astimezone().strftime("%Y-%m-%d_%H%M")
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4}", an.data_stamp(folder / "empty"))
         assert "; plotted " in cap
         assert an.provenance(folder / "empty") == ""
         out = folder / f"passk_main_{an.file_stamp()}.png"

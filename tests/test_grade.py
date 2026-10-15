@@ -91,9 +91,34 @@ def test_report_run_grades_then_writes_figures_and_tables():
                 os.environ["RUNS_ROOT"] = old
         out = buf.getvalue()
         assert "2026-10-15_t  [math500]" in out
+        # second run on unchanged data: same stamp, no tty and no --yes -> nothing overwritten; --yes -> rewritten
+        first = {p.name: p.stat().st_mtime_ns for p in (run / "figures").iterdir()}
+        buf2 = io.StringIO()
+        os.environ["RUNS_ROOT"] = str(root)
+        try:
+            with contextlib.redirect_stdout(buf2):
+                report.main(["--run", "2026-10-15_t", "--no-ci", "--no-grade"])
+            assert "already exist" in buf2.getvalue() and "nothing written" in buf2.getvalue()
+            assert {p.name: p.stat().st_mtime_ns for p in (run / "figures").iterdir()} == first
+            time.sleep(0.05)
+            with contextlib.redirect_stdout(buf2):
+                report.main(["--run", "2026-10-15_t", "--no-ci", "--no-grade", "--yes"])
+            after = {p.name: p.stat().st_mtime_ns for p in (run / "figures").iterdir()}
+            assert set(after) == set(first) and all(after[k] > first[k] for k in first)
+            # a stale set with another stamp is offered a move into old/
+            stale = run / "figures" / "passk_main_denied_math500_2020-01-01_0000.png"; stale.write_bytes(b"x")
+            with contextlib.redirect_stdout(buf2):
+                report.main(["--run", "2026-10-15_t", "--no-ci", "--no-grade", "--yes"])
+            assert not stale.exists() and (run / "figures" / "old" / stale.name).exists()
+        finally:
+            if old is None:
+                del os.environ["RUNS_ROOT"]
+            else:
+                os.environ["RUNS_ROOT"] = old
         assert "grading 8 of 8 rows" in out and "72 samples, 4 problems, 9 arms" in out
         assert "level 5 only (2 problems)" in out and "written: " in out
-        figs = sorted(p.name for p in (run / "figures").iterdir()); tabs = sorted(p.name for p in (run / "tables").iterdir())
+        figs = sorted(p.name for p in (run / "figures").iterdir() if p.is_file())
+        tabs = sorted(p.name for p in (run / "tables").iterdir() if p.is_file())
         assert len(figs) == 7 and any(re.fullmatch(r"passk_main_denied_math500_\d{4}-\d{2}-\d{2}_\d{4}\.png", f) for f in figs)
         assert not any("prose" in f for f in figs)   # no prose_only arms in this synthetic run: figure skipped
         assert any(f.startswith("passk_main_promptoff_math500-l5_") for f in figs) and any(f.startswith("passk_by_model_math500_") for f in figs)

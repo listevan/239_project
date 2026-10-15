@@ -241,12 +241,10 @@ def file_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H%M")
 
 
-def provenance(results_dir) -> str:
-    """One-line figure caption: when the arms in results_dir were generated (each arm's meta
-    finished_at, else the file's modification time), how many there are, and when the plot was made."""
-    paths = sorted(Path(results_dir).glob("*.jsonl")) if Path(results_dir).is_dir() else []
-    times = []
-    for p in paths:
+def arm_times(results_dir):
+    """Local datetime per *.jsonl in results_dir: the arm's meta finished_at, else the file's mtime."""
+    out = {}
+    for p in sorted(Path(results_dir).glob("*.jsonl")) if Path(results_dir).is_dir() else []:
         t = None
         m = p.with_suffix(".meta.json")
         if m.exists():
@@ -254,7 +252,22 @@ def provenance(results_dir) -> str:
                 t = json.loads(m.read_text()).get("finished_at")
             except (json.JSONDecodeError, OSError):
                 t = None
-        times.append((datetime.fromisoformat(t) if t else datetime.fromtimestamp(p.stat().st_mtime)).astimezone())
+        out[p.name] = (datetime.fromisoformat(t) if t else datetime.fromtimestamp(p.stat().st_mtime)).astimezone()
+    return out
+
+
+def data_stamp(results_dir) -> str:
+    """Stamp for output files: when the newest arm in results_dir finished, local time, e.g.
+    2026-10-15_1518. Regenerating from unchanged data gives the same name; new arms give a new one."""
+    times = arm_times(results_dir)
+    return max(times.values()).strftime("%Y-%m-%d_%H%M") if times else file_stamp()
+
+
+def provenance(results_dir) -> str:
+    """One-line figure caption: when the arms in results_dir were generated (each arm's meta
+    finished_at, else the file's modification time), how many there are, and when the plot was made."""
+    times = list(arm_times(results_dir).values())
+    paths = times
     if not times:
         return ""
     lo, hi = min(times), max(times)

@@ -68,7 +68,19 @@ def datasets_in(run_dir):
     return sorted(p.name for p in Path(run_dir).iterdir() if p.is_dir() and any(p.glob("*.jsonl")))
 
 
-def _report_frame(df, title, tag, stamp, cap, figs, tabs, ci, by_model):
+def _outputs(df, tag, stamp, figs, tabs, by_model):
+    """Every file one dataset frame produces, name -> path, before anything is written."""
+    out = {f"table:{name}": tabs / f"{name}_{tag}_{stamp}.csv" for name in ("summary", "passk", "calls")}
+    if by_model:
+        out["fig:by_model"] = figs / f"passk_by_model_{tag}_{stamp}.png"
+    present = set(df.tag + " " + df.condition)
+    for key, arms in MAIN.items():
+        if any(a in present for a in arms[:3]):   # skip e.g. the prose figure when no prose_only arm exists
+            out[f"fig:{key}"] = figs / f"passk_main_{key}_{tag}_{stamp}.png"
+    return out
+
+
+def _report_frame(df, title, tag, stamp, cap, figs, tabs, ci, by_model, write=True):
     import matplotlib.pyplot as plt
     print(f"{len(df)} samples, {df.problem_id.nunique()} problems, {df.arm.nunique()} arms\n")
     tables = dict(summary=an.summary(df), passk=an.passk_table(df).round(3), calls=an.calls_table(df))
@@ -79,30 +91,50 @@ def _report_frame(df, title, tag, stamp, cap, figs, tabs, ci, by_model):
         if cond in set(df.condition):
             an.verdict(df, cond)
             print()
-    written = []
+    outs = _outputs(df, tag, stamp, figs, tabs, by_model)
+    if not write:
+        return []
     for name, t in tables.items():
-        p = tabs / f"{name}_{tag}_{stamp}.csv"
-        t.to_csv(p, index=False)
-        written.append(p)
-    if by_model:
-        p = figs / f"passk_by_model_{tag}_{stamp}.png"
+        t.to_csv(outs[f"table:{name}"], index=False)
+    if "fig:by_model" in outs:
         fig = an.plot(df, BY_MODEL, color="condition", ci=ci, title=f"{title}: pass@k within each model",
-                      save=p, caption=cap)
+                      save=outs["fig:by_model"], caption=cap)
         plt.close(fig)
-        written.append(p)
-    present = set(df.tag + " " + df.condition)
     for key, arms in MAIN.items():
-        if not any(a in present for a in arms[:3]):
-            continue   # e.g. no prose_only arms in an older run
-        p = figs / f"passk_main_{key}_{tag}_{stamp}.png"
-        fig = an.plot(df, arms, ci=ci, title=f"{title}: {MAIN_TITLES[key]}", save=p, caption=cap)
-        plt.close(fig)
-        written.append(p)
-    return written
+        if f"fig:{key}" in outs:
+            fig = an.plot(df, arms, ci=ci, title=f"{title}: {MAIN_TITLES[key]}", save=outs[f"fig:{key}"], caption=cap)
+            plt.close(fig)
+    return list(outs.values())
 
 
-def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None):
-    """Grade (optional), print and save everything for one dataset of a run. Returns the written paths."""
+def confirm(question, yes):
+    """y/n on a tty; --yes answers yes everywhere; with no tty and no --yes the answer is no."""
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{question} -> no (no terminal; pass --yes to answer yes)")
+        return False
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def superseded(run_dir, dataset, stamp):
+    """Output files for this dataset carrying a different stamp (figures and tables)."""
+    import re
+    pat = re.compile(rf"^[a-z_]+_{re.escape(dataset)}(-l5)?_(\d{{4}}-\d{{2}}-\d{{2}}_\d{{4}})\.(png|csv)$")
+    found = []
+    for sub in ("figures", "tables"):
+        for p in sorted((Path(run_dir) / sub).glob("*")):
+            m = pat.match(p.name)
+            if m and m.group(2) != stamp:
+                found.append(p)
+    return found
+
+
+def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None, yes=False):
+    """Grade (optional), print and save everything for one dataset of a run. Output files are stamped
+    with the data's own time (newest arm's finished_at), so an unchanged dataset maps to the same
+    file names: existing ones are overwritten after a y/n, and sets with other stamps are offered a
+    move into old/. Returns the written paths."""
     run_dir = Path(run_dir)
     d = run_dir / dataset
     title = f"{run_dir.name} / {dataset}"
@@ -111,16 +143,35 @@ def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None):
         grade.grade_dir(d, grade.default_workers() if workers is None else workers)
         print()
     df = an.load_results(d)
-    stamp, cap = an.file_stamp(), f"{run_dir.name}: " + an.provenance(d)
+    stamp, cap = an.data_stamp(d), f"{run_dir.name}: " + an.provenance(d)
     figs, tabs = run_dir / "figures", run_dir / "tables"
     figs.mkdir(exist_ok=True)
     tabs.mkdir(exist_ok=True)
-    written = _report_frame(df, title, dataset, stamp, cap, figs, tabs, ci, by_model=True)
+    frames = [(df, title, dataset, True)]
     if dataset == "math500" and (df["level"].astype(str) == "5").any():
         d5 = df[df["level"].astype(str) == "5"]
-        print(f"----- {title}, level 5 only ({d5.problem_id.nunique()} problems) -----")
-        written += _report_frame(d5, title + " level 5", "math500-l5", stamp, cap, figs, tabs, ci, by_model=False)
-    print("written: " + ", ".join(str(p.relative_to(run_dir)) for p in written))
+        frames.append((d5, title + " level 5", "math500-l5", False))
+    planned = [p for f, _, tag, bm in frames for p in _outputs(f, tag, stamp, figs, tabs, bm).values()]
+    existing = [p for p in planned if p.exists()]
+    write = True
+    if existing:
+        write = confirm(f"{len(existing)} output file(s) for data stamp {stamp} already exist in {run_dir.name}; overwrite them?", yes)
+    written = []
+    for f, ttl, tag, bm in frames:
+        if tag == "math500-l5":
+            print(f"----- {title}, level 5 only ({f.problem_id.nunique()} problems) -----")
+        written += _report_frame(f, ttl, tag, stamp, cap, figs, tabs, ci, bm, write=write)
+    print(("written: " + ", ".join(str(p.relative_to(run_dir)) for p in written)) if written
+          else f"nothing written (kept the existing {stamp} files)")
+    old = superseded(run_dir, dataset, stamp)
+    if old:
+        stamps = sorted({p.name.rsplit("_", 2)[-2] + "_" + p.name.rsplit("_", 2)[-1].split(".")[0] for p in old})
+        if confirm(f"{len(old)} older output file(s) for {dataset} (stamps {', '.join(stamps)}); move them into old/?", yes):
+            for p in old:
+                dest = p.parent / "old"
+                dest.mkdir(exist_ok=True)
+                p.rename(dest / p.name)
+            print(f"moved {len(old)} file(s) into figures/old and tables/old")
     return written
 
 
@@ -133,6 +184,7 @@ def main(argv=None):
     ap.add_argument("--no-ci", action="store_true", help="skip the bootstrap bands (faster)")
     ap.add_argument("--no-grade", action="store_true", help="do not grade ungraded rows first")
     ap.add_argument("--workers", type=int, default=None, help="grading worker processes")
+    ap.add_argument("--yes", "-y", action="store_true", help="answer yes to overwrite and move-to-old questions")
     args = ap.parse_args(argv)
     root = find_runs_root()
     if args.list:
@@ -155,7 +207,7 @@ def main(argv=None):
     pd.set_option("display.max_columns", 40)
     for ds in dsets:
         print(f"===== {run_dir.name} / {ds} =====")
-        report_dataset(run_dir, ds, ci=not args.no_ci, grade_first=not args.no_grade, workers=args.workers)
+        report_dataset(run_dir, ds, ci=not args.no_ci, grade_first=not args.no_grade, workers=args.workers, yes=args.yes)
         print()
 
 

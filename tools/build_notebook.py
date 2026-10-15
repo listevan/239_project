@@ -625,7 +625,7 @@ if GRADE_ON_COLAB:
     SHOW = list(DATASETS)[0]        # the dataset the cells below display; change and re-run for another
     df = load_run(SHOW, require_graded=True)   # current config's files only; strays are listed and skipped
     print(SHOW, ":", len(df), "samples,", df.problem_id.nunique(), "problems,", df.arm.nunique(), "arms")
-    STAMP, CAPTION = an.file_stamp(), f"{RUN_ID}: " + an.provenance(f"{OUT}/{SHOW}")   # figures dated + captioned
+    STAMP, CAPTION = an.data_stamp(f"{OUT}/{SHOW}"), f"{RUN_ID}: " + an.provenance(f"{OUT}/{SHOW}")   # stamp = data time
     os.makedirs(f"{OUT}/figures", exist_ok=True)
     print(CAPTION)
     display(an.summary(df))
