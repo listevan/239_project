@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tool atrophy or internalization?</title>
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --fg: #1c1b19;
+    --muted: #6d6a63;
+    --accent: #b8411a;
+    --green: #1f7a4d;
+    --line: #d8d2c6;
+    --card: #fffdf9;
+    --soft: #efebe3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.35;
+    -webkit-font-smoothing: antialiased;
+  }
+  .deck { position: relative; height: 100vh; overflow: hidden; }
+  .slide {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column; justify-content: center;
+    padding: 7vh 9vw;
+    animation: fade 180ms ease-out;
+  }
+  .slide.active { display: flex; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+  .kicker {
+    font-size: clamp(14px, 1.4vw, 20px);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; margin-bottom: 1.2em;
+  }
+  h1 {
+    font-size: clamp(40px, 6.2vw, 92px);
+    line-height: 1.05; letter-spacing: -0.02em;
+    margin: 0 0 0.35em; font-weight: 700;
+  }
+  h2 {
+    font-size: clamp(28px, 3.9vw, 58px);
+    line-height: 1.1; letter-spacing: -0.015em;
+    margin: 0 0 0.6em; font-weight: 700;
+  }
+  p, li { font-size: clamp(18px, 2.1vw, 31px); margin: 0; }
+  .lead { font-size: clamp(22px, 2.8vw, 42px); color: var(--muted); max-width: 26em; }
+  .muted { color: var(--muted); }
+  ul { padding-left: 1.1em; margin: 0; }
+  li + li { margin-top: 0.5em; }
+  .note { margin-top: 1.3em; color: var(--muted); font-size: clamp(16px, 1.6vw, 23px); }
+  .footer { margin-top: 3em; color: var(--muted); font-size: clamp(15px, 1.6vw, 22px); }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--soft); border-radius: 10px; padding: 0.5em 0.8em;
+    display: inline-block; font-size: clamp(17px, 1.9vw, 28px); margin-top: 0.8em;
+  }
+  .quote {
+    border-left: 4px solid var(--accent); padding: 0.3em 0 0.3em 0.9em;
+    color: var(--muted); font-style: italic; margin-top: 1em;
+    font-size: clamp(16px, 1.8vw, 26px);
+  }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 3vw; margin-top: 0.8em; }
+  .cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2vw; margin-top: 0.8em; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 1em 1.1em;
+  }
+  .card p { font-size: clamp(17px, 1.9vw, 28px); }
+  .card .label {
+    font-size: clamp(14px, 1.4vw, 21px); color: var(--accent);
+    font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 0.5em;
+  }
+  .card.green .label { color: var(--green); }
+  .card.gray .label { color: var(--muted); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 3vw; margin: 0.6em 0 1.2em; }
+  .stat .big {
+    font-size: clamp(44px, 7vw, 104px); font-weight: 700; line-height: 1;
+    letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+  }
+  .stat .big small { font-size: 0.42em; color: var(--muted); font-weight: 500; letter-spacing: 0; }
+  .stat .cap { color: var(--muted); font-size: clamp(16px, 1.8vw, 26px); margin-top: 0.4em; }
+  .up { color: var(--green); }
+  .down { color: var(--accent); }
+
+  .flow { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2vw; margin: 0.4em 0 1em; }
+  .box {
+    background: var(--card); border: 2px solid var(--line); border-radius: 14px;
+    padding: 0.9em 1em; text-align: center; font-weight: 600;
+    font-size: clamp(19px, 2.3vw, 34px);
+  }
+  .box.accent { border-color: var(--accent); }
+  .box small { display: block; font-weight: 400; color: var(--muted); font-size: 0.6em; margin-top: 0.3em; }
+  .bar {
+    border: 2px dashed var(--accent); border-radius: 14px; padding: 0.7em 1em;
+    text-align: center; font-weight: 600; color: var(--accent);
+    font-size: clamp(19px, 2.3vw, 34px);
+  }
+
+  table { border-collapse: collapse; width: 100%; margin-top: 0.4em; }
+  th, td {
+    text-align: left; padding: 0.45em 0.7em; border-bottom: 1px solid var(--line);
+    font-size: clamp(16px, 1.9vw, 28px); vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 600; font-size: clamp(14px, 1.5vw, 22px); letter-spacing: 0.05em; text-transform: uppercase; }
+  td.hl { color: var(--accent); font-weight: 600; }
+
+  .grid {
+    display: grid; grid-template-columns: 1.1fr 1fr 1fr 1fr; gap: 0.6vw; margin: 0.4em 0 0.6em;
+  }
+  .grid > div {
+    padding: 0.55em 0.7em; border-radius: 10px; text-align: center;
+    font-size: clamp(15px, 1.7vw, 25px);
+  }
+  .grid .h { color: var(--muted); font-weight: 600; font-size: clamp(13px, 1.4vw, 20px); letter-spacing: 0.05em; text-transform: uppercase; }
+  .grid .r { text-align: left; font-weight: 600; }
+  .grid .c { background: var(--card); border: 1px solid var(--line); }
+  .grid .c.on { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  .grid .c.ctl { border: 2px solid var(--accent); font-weight: 600; }
+
+  .progress { position: fixed; top: 0; left: 0; height: 4px; background: var(--accent); width: 0; transition: width 180ms; }
+  .counter {
+    position: fixed; right: 2.2vw; bottom: 2vh; color: var(--muted);
+    font-size: clamp(13px, 1.3vw, 18px); font-variant-numeric: tabular-nums;
+  }
+  .hint { position: fixed; left: 2.2vw; bottom: 2vh; color: var(--muted); font-size: clamp(13px, 1.3vw, 18px); }
+
+  @media (max-width: 700px) {
+    .slide { padding: 6vh 16px; justify-content: flex-start; padding-top: 10vh; overflow-y: auto; }
+    .cols, .cols3, .stats, .flow { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
+    .grid > div { padding: 0.4em 0.2em; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="deck" id="deck">
+
+  <!-- 1 title -->
+  <section class="slide active">
+    <div class="kicker">Pilot study</div>
+    <h1>Tool atrophy or internalization?</h1>
+    <p class="lead">When a model is RL-trained to use a tool, does it lose the skill the tool replaces, or learn it?</p>
+    <p class="footer">Steven Li &middot; October 2026</p>
+  </section>
+
+  <!-- 2 question -->
+  <section class="slide">
+    <div class="kicker">The question</div>
+    <h2>Train a math model to call a code interpreter. Then take the interpreter away.</h2>
+    <div class="cols">
+      <div class="card">
+        <div class="label">Atrophy</div>
+        <p>It offloaded arithmetic to the tool and can no longer do it alone.</p>
+      </div>
+      <div class="card green">
+        <div class="label">Internalization</div>
+        <p>It absorbed what the tool taught it and is better without it than before.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 why care -->
+  <section class="slide">
+    <div class="kicker">Why it matters</div>
+    <h2>Tool-using agents are now trained with RL everywhere</h2>
+    <ul>
+      <li>Code interpreters, search, shells: the tool sits inside the training loop, and the model is rewarded only for the outcome.</li>
+      <li>If a skill is offloaded to the tool, the model stops practicing it. Use it or lose it.</li>
+      <li>Tools fail, get rate-limited, or are missing at deployment. What is left of the model then?</li>
+      <li>Nobody has measured this with a proper control.</li>
+    </ul>
+  </section>
+
+  <!-- 4 hook -->
+  <section class="slide">
+    <div class="kicker">The hook: one published figure</div>
+    <h2>A tool-RL model with the tool off, versus its base</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="big up">0.10 <small>vs 0.07</small></div>
+        <div class="cap">pass@1 on AIME24. Better at low k.</div>
+      </div>
+      <div class="stat">
+        <div class="big down">0.37 <small>vs 0.45</small></div>
+        <div class="cap">pass@1024 on OlymMATH-Hard. Worse at high k.</div>
+      </div>
+    </div>
+    <p class="muted">Sharper on the first try, less coverage with many tries. The curves cross near k = 128.</p>
+    <p class="note">CIR, arXiv 2505.24480, Fig. 6, Qwen2.5-Math-7B.</p>
+  </section>
+
+  <!-- 5 gaps -->
+  <section class="slide">
+    <div class="kicker">What the hook leaves open</div>
+    <h2>One figure, four gaps</h2>
+    <ul>
+      <li><strong>One size.</strong> 7B only. No idea how the crossover moves with scale.</li>
+      <li><strong>No text-RL curve.</strong> Is the high-k loss from the tool, or from RL itself?</li>
+      <li><strong>Mechanism unstated.</strong> How was the tool removed from a model that writes code in nearly every response? Only 1 of 7 prior papers says.</li>
+      <li><strong>Not interpreted.</strong> The authors read it as a capability-boundary story. Nobody has named the crossover as a cost.</li>
+    </ul>
+  </section>
+
+  <!-- 6 scattered evidence -->
+  <section class="slide">
+    <div class="kicker">Prior evidence</div>
+    <h2>Hints in other papers' side tables</h2>
+    <ul>
+      <li><strong>Trice, tool-only SFT.</strong> BeyondAIME drops from 54.3 to 34.1 at 4B. Mixed tool and text data: 49.0. Atrophy is real and data-mix driven.</li>
+      <li><strong>Trice, after RL.</strong> Tool-off beats base on 4 of 5 benchmarks, by more at 30B. Internalization at scale.</li>
+      <li><strong>Tool-Overuse Illusion.</strong> ReTool-32B makes 3.1 calls per easy GSM8K problem; 7B makes 1.2. Bigger models offload more.</li>
+      <li><strong>Invisible Leash.</strong> Text-RL keeps 93% of base coverage at 1.5B and 99% at 14B.</li>
+    </ul>
+    <p class="note">None of them puts tool-RL, text-RL and base on the same pass@k axis.</p>
+  </section>
+
+  <!-- 7 hypotheses -->
+  <section class="slide">
+    <div class="kicker">Hypotheses</div>
+    <h2>Three stories, three signatures</h2>
+    <div class="cols3">
+      <div class="card">
+        <div class="label">Atrophy</div>
+        <p>Tool-RL below text-RL at high k. More arithmetic errors than base.</p>
+      </div>
+      <div class="card green">
+        <div class="label">Internalization</div>
+        <p>Tool-RL above base at every k. Fewer arithmetic errors.</p>
+      </div>
+      <div class="card gray">
+        <div class="label">Null</div>
+        <p>Tool-RL and text-RL match within CI everywhere. The tool changed nothing.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 design -->
+  <section class="slide">
+    <div class="kicker">Design</div>
+    <h2>One base model, three checkpoints, all evaluated tool-free</h2>
+    <div class="flow">
+      <div class="box">Base<small>no RL</small></div>
+      <div class="box">Text-only RL<small>the control</small></div>
+      <div class="box accent">Tool RL<small>the treatment</small></div>
+    </div>
+    <div class="bar">evaluate every one with the tool switched off</div>
+    <p class="note">Measure pass@k curves up to k = 64, plus the rate of wrong arithmetic steps in the written solution. No training in the pilot: every checkpoint is public.</p>
+  </section>
+
+  <!-- 9 the control -->
+  <section class="slide">
+    <div class="kicker">The control</div>
+    <h2>Why text-only RL is the key arm</h2>
+    <ul>
+      <li>Same base, same kind of zero-RL on math, no tool in the loop.</li>
+      <li>Whatever RL does on its own, sharper answers or lost coverage, shows up here too.</li>
+      <li>Tool-RL minus text-RL is the tool's effect. Tool-RL minus base mixes the two.</li>
+      <li>Oat-Zero is exactly this for Qwen2.5-Math-1.5B: zero-RL from the same base, 288 steps, no tool.</li>
+    </ul>
+  </section>
+
+  <!-- 10 checkpoints -->
+  <section class="slide">
+    <div class="kicker">Checkpoints</div>
+    <h2>One trio at 1.5B, all public on Hugging Face</h2>
+    <table>
+      <tr><th>Arm</th><th>Model</th><th>Recipe</th></tr>
+      <tr><td>Base</td><td>Qwen2.5-Math-1.5B</td><td>No RL.</td></tr>
+      <tr><td>Text-only RL</td><td>Oat-Zero 1.5B</td><td>Dr.GRPO on math, 288 steps, no tool.</td></tr>
+      <tr><td class="hl">Tool RL</td><td class="hl">ToRL-1.5B</td><td>Zero-RL with a code interpreter in the loop.</td></tr>
+    </table>
+    <p class="note">The 7B trio (CIR, the Fig. 6 model) is out of the pilot: 10 to 12 A100 hours for the grid versus 3 to 4 at 1.5B. The 1.5B family also has per-step checkpoints for dose-response later.</p>
+  </section>
+
+  <!-- 11 two tool-off conditions -->
+  <section class="slide">
+    <div class="kicker">Two ways to switch the tool off</div>
+    <h2>Lost ability, or just the wrong prompt?</h2>
+    <div class="cols">
+      <div class="card">
+        <div class="label">A. Prompt off</div>
+        <p>Shared no-code prompt, identical for every model. Any code it writes anyway is intercepted, never run.</p>
+      </div>
+      <div class="card">
+        <div class="label">B. Env denied</div>
+        <p>The model's own tool prompt. It writes code, is told it was not executed, and must keep reasoning.</p>
+      </div>
+    </div>
+    <p class="quote">"No interpreter is available; the code was not executed. Continue reasoning without running code and give the final answer."</p>
+    <p class="note">An effect under A but not B is prompt mismatch, not atrophy. Both are reported.</p>
+  </section>
+
+  <!-- 12 full grid -->
+  <section class="slide">
+    <div class="kicker">The full grid</div>
+    <h2>Every model under every condition</h2>
+    <div class="grid">
+      <div></div><div class="h">Prompt off</div><div class="h">Env denied</div><div class="h">Tool on</div>
+      <div class="r">Base</div><div class="c ctl">&nbsp;</div><div class="c ctl">&nbsp;</div><div class="c">&nbsp;</div>
+      <div class="r">Text-only RL</div><div class="c ctl">&nbsp;</div><div class="c ctl">&nbsp;</div><div class="c">&nbsp;</div>
+      <div class="r">Tool RL</div><div class="c on">headline</div><div class="c on">headline</div><div class="c">&nbsp;</div>
+    </div>
+    <p class="note">Tool-on for base and text-RL shows how much a model never trained on the tool gains from it. Nothing is ever fabricated: with the tool off, every code block gets the denial message.</p>
+  </section>
+
+  <!-- 13 pass@k -->
+  <section class="slide">
+    <div class="kicker">Metric 1</div>
+    <h2>pass@k: sharpness at low k, coverage at high k</h2>
+    <ul>
+      <li>n samples per problem, 16 or 64. Unbiased estimator for every k up to n.</li>
+      <li>Paired bootstrap over problems for the difference between two arms. A CI that excludes zero is a finding.</li>
+      <li>pass@1 asks "is it sharper". pass@64 asks "can it still reach the answer at all".</li>
+    </ul>
+    <div class="mono">pass@k = E over problems [ 1 &minus; C(n&minus;c, k) / C(n, k) ]</div>
+  </section>
+
+  <!-- 14 arithmetic error rate -->
+  <section class="slide">
+    <div class="kicker">Metric 2</div>
+    <h2>Does the model still do arithmetic right?</h2>
+    <ul>
+      <li>Scan each chain of thought for chains like 7<sup>4</sup> + 5&middot;7<sup>3</sup> = 2401 + 1715 = 4116, LaTeX included.</li>
+      <li>Check every step exactly with rational arithmetic. No floats, no eval.</li>
+      <li>Report wrong over checked, plus coverage. Split by whether the final answer was right.</li>
+      <li>Also tracked: truncation rate, missing-answer rate, and code emission with the tool off.</li>
+    </ul>
+  </section>
+
+  <!-- 15 benchmarks -->
+  <section class="slide">
+    <div class="kicker">Benchmarks and decoding</div>
+    <h2>Three datasets, one decoding setting</h2>
+    <table>
+      <tr><th>Dataset</th><th>Samples</th><th>Why</th></tr>
+      <tr><td>MATH-500</td><td>16 per problem</td><td>Compliance and format. Level-5 subset reported on its own.</td></tr>
+      <tr><td>AIME 24 and 25</td><td>64 per problem</td><td>The hard end, where the crossover should show.</td></tr>
+      <tr><td>GSM-Hard, 300 problems</td><td>16 per problem</td><td>GSM8K with huge numbers. The interpreter is load-bearing.</td></tr>
+    </table>
+    <p class="note">Temperature 0.6, top-p 0.95, 3000 output tokens, at most 4 tool calls. Same for every arm, matching CIR Fig. 6.</p>
+  </section>
+
+  <!-- 16 pipeline -->
+  <section class="slide">
+    <div class="kicker">Pipeline</div>
+    <h2>Generate on Colab, analyze on the laptop</h2>
+    <ul>
+      <li><strong>Sampler.</strong> vLLM with the tool loop. One model load serves all datasets. Writes JSONL plus metadata.</li>
+      <li><strong>Resumable.</strong> Chunks checkpointed to Drive. Finished arms are skipped on re-run.</li>
+      <li><strong>Analysis.</strong> math-verify grading, pass@k, bootstrap CIs, dated figures and tables, one folder per run.</li>
+      <li><strong>Tests.</strong> The tool loop, executor and grader are unit-tested without a GPU.</li>
+    </ul>
+  </section>
+
+  <!-- 17 reading the result -->
+  <section class="slide">
+    <div class="kicker">Reading the result</div>
+    <h2>Three outcomes, each with a decision</h2>
+    <ul>
+      <li><strong>Atrophy.</strong> Tool-RL falls below text-RL at high k, or makes more arithmetic errors than base while text-RL does not. Go.</li>
+      <li><strong>Internalization.</strong> Tool-RL beats base at every k with fewer arithmetic errors. Go.</li>
+      <li><strong>Kill.</strong> Tool-RL and text-RL match within bootstrap CIs everywhere. Stop.</li>
+    </ul>
+    <p class="note">Either positive answer is a result. The kill criterion is written down before the first run.</p>
+  </section>
+
+  <!-- 18 after the pilot -->
+  <section class="slide">
+    <div class="kicker">After the pilot</div>
+    <h2>If the signal is there</h2>
+    <ul>
+      <li><strong>Dose-response.</strong> pass@k over released 1.5B RL step checkpoints (VerlTool ToRL, 140 to 650 steps), with a per-step text-RL series as the control.</li>
+      <li><strong>Scale.</strong> Replicate at 7B with CIR, the Fig. 6 model itself. Prediction: the high-k deficit shrinks but does not vanish.</li>
+      <li><strong>Fix.</strong> Mix tool-free rollouts into tool RL and test whether the high-k loss disappears. Needs training.</li>
+    </ul>
+  </section>
+
+  <!-- 19 beyond math -->
+  <section class="slide">
+    <div class="kicker">Beyond math</div>
+    <h2>The same question in two other domains</h2>
+    <div class="cols">
+      <div class="card">
+        <div class="label">Search</div>
+        <p>Search-R1 vs its R1 twin: same author, data, algorithm, 3B and 7B. Closed-book QA with retrieval off. The cleanest control anywhere.</p>
+      </div>
+      <div class="card">
+        <div class="label">Coding agents</div>
+        <p>DeepSWE and SWE-Master vs base. CRUXEval-O, predicting code output without running it, is the arithmetic analog. 32B inference, no step checkpoints.</p>
+      </div>
+    </div>
+    <p class="note">Math first: the hook is published, the controls exist, and it is the cheapest.</p>
+  </section>
+
+  <!-- 20 issues: harness -->
+  <section class="slide">
+    <div class="kicker">Issues so far: the harness</div>
+    <h2>Most of the week went into making Colab survive a run</h2>
+    <ul>
+      <li><strong>Stalls.</strong> The arithmetic checker used regex plus eval and hung on long outputs. Rewritten as a linear scan with no eval.</li>
+      <li><strong>Hung executions.</strong> Model code that called input() waited out the whole timeout. Stdin is now closed so it fails fast.</li>
+      <li><strong>Disconnects.</strong> Colab drops sessions mid-run. Runs checkpoint to Drive in chunks, resume from the last one, and skip finished arms.</li>
+      <li><strong>Drive.</strong> Mounts failed silently and the project folder was filed in different places. Now fails loudly and is found anywhere under My Drive.</li>
+      <li><strong>Stale files.</strong> Results from an older notebook version mixed into a run. They are flagged and quarantined.</li>
+      <li><strong>Grading.</strong> Too slow on Colab. Moved to the laptop with per-row timeouts.</li>
+    </ul>
+  </section>
+
+  <!-- 21 issues: method -->
+  <section class="slide">
+    <div class="kicker">Issues so far: the method</div>
+    <h2>What could still bias the answer</h2>
+    <ul>
+      <li><strong>Context.</strong> Qwen2.5-Math's native context is 4k tokens; CIR evaluated at 16k by extrapolation. We cap at 4k and report the truncation rate.</li>
+      <li><strong>Prompts.</strong> Each checkpoint was trained on its own template. ToRL's is verbatim from the paper, but prompt mismatch can masquerade as atrophy. Hence both tool-off protocols.</li>
+      <li><strong>Non-compliance.</strong> Under prompt-off, models write code anyway. It is counted, intercepted, and never executed.</li>
+      <li><strong>No sandbox.</strong> Tool-on runs model code on the Colab VM with a 10 s timeout. Fine there, not on a shared machine.</li>
+      <li><strong>Only 1.5B, only math.</strong> 7B is too expensive for the pilot, and every open tool-RL checkpoint is a math model.</li>
+    </ul>
+  </section>
+
+  <!-- 22 takeaway -->
+  <section class="slide">
+    <div class="kicker">Takeaway</div>
+    <h2>One base, three checkpoints, tool off</h2>
+    <ul>
+      <li>A published crossover nobody has explained.</li>
+      <li>A control that separates the tool's effect from RL's.</li>
+      <li>Two tool-off protocols and two metrics.</li>
+      <li>A kill criterion written down in advance.</li>
+      <li>A harness that now survives Colab. Results next.</li>
+    </ul>
+    <p class="footer">Questions?</p>
+  </section>
+
+</div>
+<div class="hint">&larr; &rarr; to navigate</div>
+<div class="counter" id="counter"></div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+  let i = 0;
+
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, j) => s.classList.toggle('active', j === i));
+    counter.textContent = (i + 1) + ' / ' + slides.length;
+    progress.style.width = ((i + 1) / slides.length * 100) + '%';
+    history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); show(i + 1); }
+    else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+  });
+
+  // Click or tap: right half forward, left half back.
+  document.getElementById('deck').addEventListener('click', (e) => {
+    show(e.clientX > window.innerWidth / 2 ? i + 1 : i - 1);
+  });
+
+  const start = parseInt(location.hash.slice(1), 10);
+  show(Number.isFinite(start) ? start - 1 : 0);
+</script>
+</body>
+</html>

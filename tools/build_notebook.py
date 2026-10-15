@@ -57,7 +57,7 @@ each condition is read as its own three-way comparison.
 ```
 239_project/runs/2026-10-15_math-1.5b/
     config.json          the settings of this run
-    math500/  aime24/  aime25/  gsm_hard/      one JSONL + meta per arm
+    aime24/  aime25/  gsm_hard/  math500_l5/   one JSONL + meta per arm
     figures/  tables/   written by report.py, every file dated
 ```
 
@@ -70,13 +70,13 @@ each condition is read as its own three-way comparison.
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
-Rough wall-clock on an A100 with vLLM for the default plan (MATH-500 x 16,
-AIME24 + AIME25 x 64, 300 GSM-Hard x 16, about 17k samples per arm):
+Rough wall-clock on an A100 with vLLM for the default plan (AIME24 + AIME25 x 64,
+300 GSM-Hard x 16, 134 level-5 MATH problems x 16, about 11k samples per arm):
 
 | Preset | per model (3 arms) | whole grid |
 |---|---|---|
-| math-1.5b | 1 to 1.5 h | 3 to 4 h |
-| math-7b | 3 to 4 h | 10 to 12 h, split it over sessions |
+| math-1.5b | 45 min to 1 h | 2 to 3 h |
+| math-7b | 2 to 3 h | 7 to 8 h, split it over sessions |
 
 Run the **smoke test** first (about 15 minutes). It exercises every code path and
 dataset loader on a few problems and tells you the pipeline is wired before you
@@ -191,11 +191,12 @@ numbers. `DENIAL_TEXT` overrides the message injected under `prompt_off` and
 
 **Datasets.** `DATASETS` maps a name to (problems, samples per problem); 0 problems
 means the whole set. The interpreter is not load-bearing on MATH-500 at 1.5B (the
-smoke run and the ToRL paper agree, a few points), so MATH-500 is the compliance
-and format run, AIME and the MATH-500 level-5 subset are the hard end, and
-GSM-Hard (GSM8K with huge numbers, integer-answer problems only) is the set where
-Python helps enormously and the arithmetic metric has coverage. The gate before any
-verdict: tool_on minus env_denied for the tool-RL model must be large on that set.
+smoke run and the ToRL paper agree, a few points), so the full set is off by
+default. AIME24 and AIME25 and the 134 level-5 MATH-500 problems are the hard end,
+and GSM-Hard (GSM8K with huge numbers, integer-answer problems only) is the set
+where Python helps enormously and the arithmetic metric has coverage. The gate
+before any verdict: tool_on minus env_denied for the tool-RL model must be large on
+that set. Add `"math500": (0, 16)` back for the full compliance run.
 
 **Run id.** `RUN_ID` defaults to today's date plus the preset. Re-running the config
 cell on another day makes a new run folder; to resume or extend an earlier one (a
@@ -231,13 +232,13 @@ PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
 SMOKE = True               # True: a few problems per dataset, 4 samples, 1024 tokens, ~15 min. False: the real run.
 
 # name -> (problems, samples per problem); 0 problems = the whole set
-#   math500   500 (level-5 subset reported separately)   aime24 / aime25   30 each
-#   gsm_hard  1016 integer-answer problems of GSM8K-with-huge-numbers; 300 is plenty for a pilot
+#   aime24 / aime25   30 each, the hard end          gsm_hard   1016 integer-answer GSM8K-with-huge-numbers problems
+#   math500_l5        the 134 level-5 MATH-500 problems   math500   all 500 (not tool-load-bearing at 1.5B, off by default)
 if SMOKE:
-    DATASETS = {"math500": (20, 4), "gsm_hard": (10, 4)}
+    DATASETS = {"aime24": (6, 4), "gsm_hard": (10, 4), "math500_l5": (10, 4)}
     MAX_TOKENS = 1024
 else:
-    DATASETS = {"math500": (0, 16), "aime24": (0, 64), "aime25": (0, 64), "gsm_hard": (300, 16)}
+    DATASETS = {"aime24": (0, 64), "aime25": (0, 64), "gsm_hard": (300, 16), "math500_l5": (0, 16)}
     MAX_TOKENS = 3000
 RUN_ID = None              # None: today's date + preset, e.g. 2026-10-15_math-1.5b. To resume or extend an
                            # earlier run, set its id from the list printed below.
@@ -655,6 +656,7 @@ NEXT_MD = r"""
   model is how much the interpreter was carrying. Where that gap is small (MATH-500
   at 1.5B), the set cannot test atrophy whatever the text-RL comparison says. Read
   the verdict on the sets where the gap is large (GSM-Hard, AIME, MATH level 5).
+  The full MATH-500 is the compliance run, not the atrophy test.
 
 Then: flip `SMOKE=False` for the default plan, then `math-7b` (the CIR checkpoint
 makes several calls per problem and reproduces Fig. 6 with the control added).

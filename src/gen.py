@@ -152,7 +152,7 @@ def make_grader():
 
 
 # --------------------------------------------------------------------------- data
-DATASETS = ("math500", "aime24", "aime25", "gsm_hard")
+DATASETS = ("math500", "math500_l5", "aime24", "aime25", "gsm_hard")
 
 
 def gsm_gold(target):
@@ -188,10 +188,12 @@ def parse_dataset_specs(spec: str, n_problems: int, n: int):
 
 def load_problems(name: str, n_problems: int, seed: int):
     from datasets import load_dataset  # type: ignore
-    if name == "math500":
+    if name in ("math500", "math500_l5"):
         ds = load_dataset("HuggingFaceH4/MATH-500", split="test")
         items = [dict(id=r["unique_id"], problem=r["problem"], answer=r["answer"],
                       subject=r["subject"], level=str(r["level"])) for r in ds]
+        if name == "math500_l5":
+            items = [it for it in items if it["level"] == "5"]   # the 134 hardest, the only MATH-500 slice worth tool-off
     elif name == "aime24":
         ds = load_dataset("math-ai/aime24", split="test")
         items = [dict(id=f"aime24-{r['id']}", problem=r["problem"],
