@@ -112,6 +112,7 @@
   }
   th { color: var(--muted); font-weight: 600; font-size: clamp(14px, 1.5vw, 22px); letter-spacing: 0.05em; text-transform: uppercase; }
   td.hl { color: var(--accent); font-weight: 600; }
+  table.compact th, table.compact td { font-size: clamp(14px, 1.55vw, 22px); padding: 0.35em 0.6em; }
 
   .grid {
     display: grid; grid-template-columns: 1.1fr 1fr 1fr 1fr; gap: 0.6vw; margin: 0.4em 0 0.6em;
@@ -374,15 +375,19 @@
     <p class="note">Either positive answer is a result. The kill criterion is written down before the first run.</p>
   </section>
 
-  <!-- 18 after the pilot -->
+  <!-- 18 staged plan -->
   <section class="slide">
-    <div class="kicker">After the pilot</div>
-    <h2>If the signal is there</h2>
-    <ul>
-      <li><strong>Dose-response.</strong> pass@k over released 1.5B RL step checkpoints (VerlTool ToRL, 140 to 650 steps), with a per-step text-RL series as the control.</li>
-      <li><strong>Scale.</strong> Replicate at 7B with CIR, the Fig. 6 model itself. Prediction: the high-k deficit shrinks but does not vanish.</li>
-      <li><strong>Fix.</strong> Mix tool-free rollouts into tool RL and test whether the high-k loss disappears. Needs training.</li>
-    </ul>
+    <div class="kicker">Staged plan</div>
+    <h2>Six stages, each gated on the one before</h2>
+    <table class="compact">
+      <tr><th>Stage</th><th>What</th><th>Status</th></tr>
+      <tr><td>0. Harness</td><td>Sampler with the tool loop, 3&times;3 grid, analysis, Colab notebook, tests, resumable runs.</td><td class="hl">done</td></tr>
+      <tr><td>1. Smoke</td><td>Every arm on 20 MATH-500 and 10 GSM-Hard problems, 4 samples each. About 5 minutes. Checks prompts, compliance, resume.</td><td class="hl">next</td></tr>
+      <tr><td>2. Full grid</td><td>MATH-500 &times;16, AIME 24 and 25 &times;64, GSM-Hard 300 &times;16. 3 to 4 A100 hours. Grade and verdict on the laptop.</td><td>this week</td></tr>
+      <tr><td>3. Decide</td><td>Atrophy, internalization, or kill. A kill is written up as the negative result.</td><td>next week</td></tr>
+      <tr><td>4. Dose-response</td><td>ToRL 1.5B step checkpoints (140 to 650) against the per-step text-RL series (steps 1 to 499).</td><td>weeks 3 to 4</td></tr>
+      <tr><td>5. Stretch</td><td>7B with CIR, the Fig. 6 model itself. Or the fix: tool-free rollouts mixed into tool RL.</td><td>if time</td></tr>
+    </table>
   </section>
 
   <!-- 19 beyond math -->

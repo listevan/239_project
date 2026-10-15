@@ -186,6 +186,14 @@ def test_status_and_show_handle_ungraded_rows():
             assert "grade.py" in str(e)
 
 
+def test_notebook_clones_instead_of_embedding():
+    nb = json.load(open(NB))
+    cells = ["".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code"]
+    assert not any(c.startswith("%%writefile") for c in cells)
+    clone = [c for c in cells if 'REPO = "listevan/239_project"' in c]
+    assert len(clone) == 1 and "github_token.txt" in clone[0] and "git" in clone[0]
+    assert "print(url" not in clone[0] and "print(tok" not in clone[0]   # the token is never printed
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

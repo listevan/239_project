@@ -10,25 +10,31 @@ The full plan is in `docs/experiment1_plan.md`.
 
 | Path | What |
 |---|---|
-| `notebooks/tool_atrophy_pilot.ipynb` | the Colab notebook: install, run, analyze. Self-contained. |
+| `notebooks/tool_atrophy_pilot.ipynb` | the Colab notebook: install, clone this repo onto the VM, configure, run |
 | `src/gen.py` | vLLM sampler with the tool loop and the conditions below; writes JSONL |
 | `src/analyze.py` | pass@k (unbiased estimator), paired bootstrap CIs, summary table, plot, verdict |
 | `src/arith_check.py` | exact-rational checker for `a op b = c` in prose |
-| `tools/build_notebook.py` | regenerates the notebook from `src/` (the notebook embeds the sources as `%%writefile` cells) |
+| `tools/build_notebook.py` | regenerates the notebook from its cell templates (code is cloned, not embedded) |
 | `tests/test_gen.py` | laptop tests for the tool loop, executor, grader, records |
 | `docs/` | experiment plan and the two-idea memo |
 
 ## Run it in Colab
 
-1. Upload `notebooks/tool_atrophy_pilot.ipynb` to Colab (or open it from GitHub once pushed).
-2. Runtime: pick a GPU. A100 runs every preset; L4 is fine for 1.5B; T4 only 1.5B.
-3. Run top to bottom with `SMOKE = True` (about 5 minutes). Results land in
-   `MyDrive/239_project/results/<preset>-smoke/<dataset>/`.
-4. Set `SMOKE = False` and re-run the config and run cells. There is one run
-   cell per checkpoint. Each cell first looks at Drive: finished arms are loaded,
-   not regenerated; an arm that was interrupted resumes from its last
-   checkpointed chunk (`CHUNK` problems, default 100). After a disconnect, re-run
-   the cell that was going.
+1. Once: the repo is private, so the notebook needs a GitHub token to clone it
+   onto the VM. Make a fine-grained token (GitHub > Settings > Developer
+   settings; repository access: this repo; permission: Contents, read) and save
+   it as `github_token.txt` in the `239_project` folder on Drive, or as a Colab
+   secret named `GITHUB_TOKEN`.
+2. Open `notebooks/tool_atrophy_pilot.ipynb` from this repo in VS Code (Colab
+   extension) or upload it to Colab. Runtime: a GPU. A100 runs every preset; L4
+   is fine for 1.5B; T4 only 1.5B.
+3. Run the cells top to bottom. Cell 3 clones or pulls the repo, so the VM runs
+   whatever is on GitHub: push local edits first. The config cell defaults to
+   the real run (`SMOKE = True` is a 10-minute wiring check).
+4. One run cell per checkpoint. Each cell first looks at Drive: finished arms
+   are loaded, not regenerated; an arm that was interrupted resumes from its
+   last checkpointed chunk (`CHUNK` problems, default 100). After a disconnect,
+   re-run the cell that was going.
 5. Colab only generates (`GRADE_ON_COLAB = False`). Grade and analyze on your
    laptop, see below.
 

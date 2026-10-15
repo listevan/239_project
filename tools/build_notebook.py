@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Build notebooks/tool_atrophy_pilot.ipynb from src/*.py.
+"""Build notebooks/tool_atrophy_pilot.ipynb from the cell templates below.
 
-The notebook is self-contained for Colab: the three source files are embedded as
-%%writefile cells, so src/ stays the single source of truth. Re-run this after
-editing anything under src/:   python tools/build_notebook.py
+The notebook clones this repo onto the Colab VM (cell 3), so src/ is never embedded
+and code changes only need a push. Re-run this after editing a cell template:
+    uv run tools/build_notebook.py
 """
 from pathlib import Path
 
@@ -20,11 +20,6 @@ def md(text):
 
 def code(text):
     return nbf.v4.new_code_cell(text.strip("\n"))
-
-
-def writefile(name):
-    body = (SRC / name).read_text().rstrip("\n")
-    return code(f"%%writefile src/{name}\n{body}")
 
 
 INTRO = r"""
@@ -44,7 +39,7 @@ tool). Same prompt, same decoding, pass@k plus an arithmetic error rate.
 The only published hint is CIR (2505.24480) Fig. 6: one 7B model, no text-RL
 control. This notebook adds the control and a direct skill metric.
 
-**What runs.** `src/gen.py` loads one checkpoint, samples it under each condition
+**What runs.** The repo is cloned onto the VM. `src/gen.py` loads one checkpoint, samples it under each condition
 on each dataset, and writes one JSONL per (model, dataset, condition) to Google
 Drive, checkpointing every `CHUNK` problems, so a disconnect costs at most one
 chunk. Colab does GPU work only: grading (math-verify) and the arithmetic check run
@@ -149,19 +144,66 @@ else:
     ROOT = os.path.abspath("239_project_local")
 RUNS = f"{ROOT}/runs"
 os.makedirs(RUNS, exist_ok=True)
-WORK = "/content/239_project" if os.path.isdir("/content") else os.path.abspath("239_project_work")
-os.makedirs(f"{WORK}/src", exist_ok=True)
-os.chdir(WORK)
 print("runs ->", RUNS)
-print("work ->", WORK)
 """
 
-FILES_MD = r"""
+CODE_MD = r"""
 ## 3. Code
 
-Three files, embedded from the repo's `src/`. Edit them in the repo and rebuild
-the notebook with `python tools/build_notebook.py`; editing here works too for a
-one-off run. `gen.py` prints its full CLI with `python src/gen.py --help`.
+The repo is cloned onto this VM at `/content/239_project` (or pulled to the latest
+commit if it is already there), and `src/` goes on the path. The VM runs what is
+on GitHub, so push local edits before running. The repo is private, so a token
+is needed once: a fine-grained GitHub token with read access to this repo's
+contents, found in this order: the `GITHUB_TOKEN` environment variable, a Colab
+secret named `GITHUB_TOKEN`, or the file `github_token.txt` in the `239_project`
+folder on Drive (write it from Finder, Drive for desktop syncs it). Nothing here
+prints the token.
+"""
+
+CODE = r"""
+import os, subprocess, sys
+REPO = "listevan/239_project"
+BRANCH = "main"
+WORK = "/content/239_project" if os.path.isdir("/content") else os.path.abspath("239_project_work")
+
+
+def github_token():
+    tok = os.environ.get("GITHUB_TOKEN")
+    if tok:
+        return tok.strip(), "GITHUB_TOKEN env var"
+    try:
+        from google.colab import userdata
+        tok = userdata.get("GITHUB_TOKEN")
+        if tok:
+            return tok.strip(), "Colab secret"
+    except Exception:
+        pass
+    p = f"{ROOT}/github_token.txt"
+    if os.path.exists(p):
+        return open(p).read().strip(), "Drive file github_token.txt"
+    return None, "none (public clone)"
+
+
+tok, tok_src = github_token()
+url = f"https://x-access-token:{tok}@github.com/{REPO}.git" if tok else f"https://github.com/{REPO}.git"
+if os.path.isdir(f"{WORK}/.git"):
+    subprocess.run(["git", "-C", WORK, "remote", "set-url", "origin", url], check=True)
+    r = subprocess.run(["git", "-C", WORK, "fetch", "-q", "origin", BRANCH], capture_output=True, text=True)
+    if r.returncode == 0:
+        subprocess.run(["git", "-C", WORK, "reset", "-q", "--hard", f"origin/{BRANCH}"], check=True)
+    action = "pulled" if r.returncode == 0 else "fetch failed, kept the copy on the VM"
+else:
+    r = subprocess.run(["git", "clone", "-q", "--depth", "1", "-b", BRANCH, url, WORK], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"clone failed (token source: {tok_src}): {r.stderr.strip().replace(tok or '@@', '***')}\n"
+                         "The repo is private: put a fine-grained GitHub token (contents: read) in "
+                         f"{ROOT}/github_token.txt, or as a Colab secret GITHUB_TOKEN, then re-run this cell.")
+    action = "cloned"
+os.chdir(WORK)
+if f"{WORK}/src" not in sys.path:
+    sys.path.insert(0, f"{WORK}/src")
+sha = subprocess.run(["git", "-C", WORK, "log", "-1", "--format=%h  %s  (%cr)"], capture_output=True, text=True).stdout.strip()
+print(f"{action} {REPO}@{BRANCH} via {tok_src}\n  {sha}\n  work -> {WORK}  (the VM runs this commit; push local edits first)")
 """
 
 CONFIG_MD = r"""
@@ -694,7 +736,7 @@ def build():
         code(GPU_CHECK),
         md(INSTALL_MD), code(INSTALL),
         md(DRIVE_MD), code(DRIVE),
-        md(FILES_MD), writefile("arith_check.py"), writefile("gen.py"), writefile("analyze.py"),
+        md(CODE_MD), code(CODE),
         md(CONFIG_MD), code(CONFIG),
         md(RUN_MD), code(RUN_SETUP), code(RUN_BASE), code(RUN_TEXT_RL), code(RUN_TOOL_RL),
         md(ANALYZE_MD), code(ANALYZE), code(PLOT), code(CALLS), code(PLOT2), code(PLOT3), code(VERDICT),
