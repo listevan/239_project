@@ -194,6 +194,25 @@ def test_notebook_clones_instead_of_embedding():
     assert len(clone) == 1 and "github_token.txt" in clone[0] and "git" in clone[0]
     assert "print(url" not in clone[0] and "print(tok" not in clone[0]   # the token is never printed
 
+def test_arm_of_unselected_condition_is_kept_and_shown():
+    import gen
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "run"; folder = out / "math500"; folder.mkdir(parents=True)
+        ns = run_setup_namespace(out, conditions=("prompt_off", "env_denied", "tool_on"))   # kernel list lacks prose_only
+        cur = folder / "base__prompt_off__qwen_math_nocode.jsonl"
+        gen.write_jsonl_atomic(cur, [rec("p0", 0), rec("p0", 1)])
+        gen.meta_path(cur).write_text(json.dumps(dict(pass1=1.0, n=2, n_problems=1, gen_seconds=1, chunk=100)))
+        prose = folder / "base__prose_only__qwen_math_nocode.jsonl"
+        gen.write_jsonl_atomic(prose, [rec("p0", 0, cond="prose_only"), rec("p0", 1, cond="prose_only", correct=0)])
+        gen.meta_path(prose).write_text(json.dumps(dict(pass1=0.5, n=2, n_problems=1, gen_seconds=1, chunk=100)))
+        assert ns["stale_files"]("math500") == []
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            df = ns["load_run"]("math500")
+            ns["show"]("base")
+        assert set(df.condition) == {"prompt_off", "prose_only"} and "ignoring" not in buf.getvalue()
+        assert "prose_only" in buf.getvalue()
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

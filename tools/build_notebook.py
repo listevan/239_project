@@ -356,14 +356,16 @@ RUN_SETUP = r"""
 import json, os, shutil, subprocess, sys, time, importlib
 from pathlib import Path
 sys.path.insert(0, "src")
+import gen   # the file-naming rules (which conditions use the shared prompt) come from gen.py itself
 
 
-def arm_files(tag, dataset):
+def arm_files(tag, dataset, conditions=None):
     spec = PRESETS[PRESET]["models"][tag]
     out = Path(OUT) / dataset
     rows = []
-    for cond in CONDITIONS:
-        tmpl = SHARED_TEMPLATE if cond == "prompt_off" else ("qwen_math_cot" if cond == "plain_cot" else spec["native"])
+    for cond in (conditions or CONDITIONS):
+        tmpl = (SHARED_TEMPLATE if cond in gen.SHARED_PROMPT_CONDITIONS
+                else "qwen_math_cot" if cond == "plain_cot" else spec["native"])
         stem = out / f"{tag}__{cond}__{tmpl}"
         rows.append((cond, stem.with_suffix(".jsonl"), stem.with_suffix(".meta.json"), Path(str(stem) + ".jsonl.partial")))
     return rows
@@ -383,7 +385,9 @@ DATA_SUFFIXES = (".jsonl", ".meta.json", ".jsonl.partial", ".jsonl.tmp")
 
 
 def expected_stems(dataset):
-    return {jsonl.stem for tag in PRESETS[PRESET]["models"] for _, jsonl, _, _ in arm_files(tag, dataset)}
+    # Every condition gen.py knows, not only the ones selected right now, so an arm generated under a
+    # condition that was later removed from CONDITIONS (or added by a newer notebook) is never "stale".
+    return {jsonl.stem for tag in PRESETS[PRESET]["models"] for _, jsonl, _, _ in arm_files(tag, dataset, gen.CONDITIONS)}
 
 
 def stale_files(dataset):
@@ -481,7 +485,7 @@ def show(tag):
             aggs = dict(samples=aggs["samples"], problems=aggs["problems"], pass1=("correct", "mean"),
                         **{k: v for k, v in aggs.items() if k not in ("samples", "problems")})
         tbl = d.groupby("condition").agg(**aggs).round(3)
-        tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index])
+        tbl = tbl.reindex([c for c in an.COND_ORDER if c in tbl.index] + [c for c in tbl.index if c not in an.COND_ORDER])
         tbl.index.name = f"{tag} / {ds}"
         try:
             display(tbl)
