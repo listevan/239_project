@@ -61,6 +61,7 @@ each condition is read as its own three-way comparison.
 | `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial message injected, nothing runs |
 | `env_denied` | the model's tool prompt (asks for code) | intercepted, denial message injected, nothing runs |
 | `tool_on` | the model's tool prompt | executed with `python -I`, 4-call budget, then the budget message |
+| `prose_only` | shared no-code prompt, plus a logit ban on every backtick token | cannot happen: no fence can open, so nothing is denied. The ability test. |
 | `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block. CIR's condition. |
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
@@ -298,7 +299,7 @@ OVERWRITE = False          # True regenerates arms that are already on Drive
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 import datetime, json, os
-CONDITIONS = ["prompt_off", "env_denied", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
+CONDITIONS = ["prompt_off", "env_denied", "prose_only", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
 OUT = f"{RUNS}/{RUN_ID}"
@@ -317,8 +318,9 @@ if os.path.exists(cfg_path):
     diff = [k for k in ("preset", "datasets", "conditions", "max_tokens", "max_model_len", "temperature", "top_p",
                         "seed", "max_calls", "shared_template", "denial_text")
             if json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
-    print(f"config.json from {old.get('created', '?')}" + (f"; DIFFERS in {diff}: finished arms keep the old settings, "
-          "set a new RUN_ID for a clean run" if diff else "; same settings"))
+    print(f"config.json from {old.get('created', '?')}" + (f"; DIFFERS in {diff}: finished arms keep their old settings. "
+          "Added conditions or datasets are fine (the missing arms get generated); changed sampling settings want a new RUN_ID"
+          if diff else "; same settings"))
 else:
     json.dump(CONFIG, open(cfg_path, "w"), indent=1)
     print("wrote", cfg_path)
@@ -651,9 +653,9 @@ PLOT2 = r"""
 # Figure 1: within each model, what does turning the tool off cost?
 if df is not None:
     an.plot(df, {
-        "base":    ["base prompt_off",    "base env_denied",    "base tool_on"],
-        "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
-        "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
+        "base":    ["base prompt_off",    "base env_denied",    "base prose_only",    "base tool_on"],
+        "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl prose_only", "text_rl tool_on"],
+        "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl prose_only", "tool_rl tool_on"],
     }, color="condition", title=f"{RUN_ID} / {SHOW}: pass@k within each model",
        save=f"{OUT}/figures/passk_by_model_{SHOW}_{STAMP}.png", caption=CAPTION);
 """
@@ -665,6 +667,7 @@ if df is not None:
     for key, arms, ttl in [
         ("denied",    ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"], "tool denied"),
         ("promptoff", ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"], "told not to code"),
+        ("prose",     ["tool_rl prose_only", "text_rl prose_only", "base prose_only", "base tool_on"], "no code possible"),
         ("toolon",    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"], "with the tool"),
     ]:
         an.plot(df, arms, title=f"{RUN_ID} / {SHOW}: {ttl}, tool-RL vs text-RL vs base",
@@ -687,7 +690,10 @@ NEXT_MD = r"""
   `env_denied` is the headline: every model asked for code, nobody gets to run it.
 - **prompt_off tests compliance too.** `called_pct` on those rows is how often a
   model wrote code after being told not to. A tool-RL model that cannot stop is
-  itself a finding (ToRL: 84% in the smoke run, Oat-Zero 26%).
+  itself a finding (ToRL: about 90% on AIME, Oat-Zero about 30%).
+- **prose_only is the ability test.** No fence can open, so there is no denial to
+  derail the model and no code to defer to; what is left is what it can compute by
+  hand. `env_denied` minus `prose_only` is the behavioural cost of the habit.
 - **Compare to text_rl, not just base.** RL alone sharpens pass@1 and can lower
   high-k pass@k (the sharpening confound). The question is whether tool-RL sits
   below text-RL.

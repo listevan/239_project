@@ -22,18 +22,29 @@ class Out:
         self.text, self.token_ids = text, list(range(len(text.split())))
 
 
+class FakeTok:
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": text.split()}
+
+    def get_vocab(self):
+        return {"a": 1, "```": 7, "`": 8, "python": 9}
+
+
 class FakeLLM:
     calls = []            # prompts of every generate() call
+    biases = []           # logit_bias of the first SamplingParams of every call
     crash_on_call = None  # 1-based index of the call that raises
 
     def __init__(self, **kw):
         self.kw = kw
 
     def get_tokenizer(self):
-        return lambda text, add_special_tokens=False: {"input_ids": text.split()}
+        return FakeTok()
 
     def generate(self, prompts, params, use_tqdm=False):
         FakeLLM.calls.append(list(prompts))
+        first = params[0] if isinstance(params, list) else params
+        FakeLLM.biases.append(getattr(first, "logit_bias", None))
         if FakeLLM.crash_on_call == len(FakeLLM.calls):
             raise RuntimeError("simulated disconnect")
         plist = params if isinstance(params, list) else [params] * len(prompts)
@@ -193,6 +204,22 @@ def test_multi_dataset_one_model_load():
             gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off",
                       "--dataset", "math500,aime24:3:1", "--n", str(N), "--out", str(out), "--no-grade"])
         assert "all conditions already done" in buf.getvalue()
+
+def test_prose_only_bans_backticks_and_uses_shared_prompt():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.biases, FakeLLM.crash_on_call = [], [], None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prose_only,prompt_off", "--n", str(N),
+                      "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade"])
+        assert "prose_only: 2 backtick tokens banned" in buf.getvalue()
+        assert FakeLLM.biases == [{7: -100.0, 8: -100.0}, None]      # ban on the prose_only arm only
+        arm = out / "math500" / "base__prose_only__qwen_math_nocode.jsonl"   # shared no-code template
+        recs = records(arm)
+        assert len(recs) == N_PROBLEMS * N and all(r["n_calls"] == 0 for r in recs)
+        assert json.load(open(gen.meta_path(arm)))["condition"] == "prose_only"
 
 if __name__ == "__main__":
     fails = 0

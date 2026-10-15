@@ -69,13 +69,14 @@ def test_report_run_grades_then_writes_figures_and_tables():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d) / "runs"; run = root / "2026-10-15_t"; folder = run / "math500"; folder.mkdir(parents=True)
         for tag in ("base", "text_rl", "tool_rl"):
-            path = folder / f"{tag}__prompt_off__qwen_math_nocode.jsonl"
-            recs = [dict(row(f"p{i}", k, r"\boxed{7}" if (i + k) % 2 else r"\boxed{8}", "7"),
-                         tag=tag, template="t", model="m", subject="s", level=("5" if i % 2 else "1"), boxed_present=True,
-                         finish="eos", gen_tokens=10, rounds=1, code_emitted=False, fake_outputs=0, n_exec_err=0)
-                    for i in range(4) for k in range(2)]
-            gen.write_jsonl_atomic(path, recs)
-            gen.meta_path(path).write_text(json.dumps(dict(n=2, n_problems=4, pass1=None, graded=False)))
+            for cond, tmpl in (("prompt_off", "qwen_math_nocode"), ("env_denied", "qwen_math_tir"), ("tool_on", "qwen_math_tir")):
+                path = folder / f"{tag}__{cond}__{tmpl}.jsonl"
+                recs = [dict(row(f"p{i}", k, r"\boxed{7}" if (i + k) % 2 else r"\boxed{8}", "7"), tag=tag, condition=cond,
+                             template=tmpl, model="m", subject="s", level=("5" if i % 2 else "1"), boxed_present=True,
+                             finish="eos", gen_tokens=10, rounds=1, code_emitted=False, fake_outputs=0, n_exec_err=0)
+                        for i in range(4) for k in range(2)]
+                gen.write_jsonl_atomic(path, recs)
+                gen.meta_path(path).write_text(json.dumps(dict(n=2, n_problems=4, pass1=None, graded=False)))
         old = os.environ.get("RUNS_ROOT"); os.environ["RUNS_ROOT"] = str(root)
         buf = io.StringIO()
         try:
@@ -90,10 +91,11 @@ def test_report_run_grades_then_writes_figures_and_tables():
                 os.environ["RUNS_ROOT"] = old
         out = buf.getvalue()
         assert "2026-10-15_t  [math500]" in out
-        assert "grading 8 of 8 rows" in out and "24 samples, 4 problems, 3 arms" in out
+        assert "grading 8 of 8 rows" in out and "72 samples, 4 problems, 9 arms" in out
         assert "level 5 only (2 problems)" in out and "written: " in out
         figs = sorted(p.name for p in (run / "figures").iterdir()); tabs = sorted(p.name for p in (run / "tables").iterdir())
         assert len(figs) == 7 and any(re.fullmatch(r"passk_main_denied_math500_\d{4}-\d{2}-\d{2}_\d{4}\.png", f) for f in figs)
+        assert not any("prose" in f for f in figs)   # no prose_only arms in this synthetic run: figure skipped
         assert any(f.startswith("passk_main_promptoff_math500-l5_") for f in figs) and any(f.startswith("passk_by_model_math500_") for f in figs)
         assert sum(f.startswith("passk_main_toolon_") for f in figs) == 2
         assert len(tabs) == 6 and any(t.startswith("summary_math500_") for t in tabs) and any(t.startswith("calls_math500-l5_") for t in tabs)

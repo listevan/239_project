@@ -11,6 +11,10 @@ Every model gets the same grid. Conditions:
   tool_on      the model's tool prompt. Code is executed with `python -I` in a
                temp dir (NOT a sandbox: fine for Colab, not for a shared box).
                Calls past --max-calls get the budget message instead.
+  prose_only   shared no-code prompt AND a logit ban on every token containing a
+               backtick, so no code fence can open: the model must compute by hand
+               from the start and nothing ever gets denied. The ability test; the
+               interceptor stays armed as a safety net (n_calls > 0 = the ban leaked).
   plain_cot    optional. Shared plain CoT prompt, one pass, no interception at
                all: the condition prior work (CIR) used. Code the model writes is
                just text and it will fabricate its own ```output block.
@@ -91,8 +95,21 @@ TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
 
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
-CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot")
-LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on")
+CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot", "prose_only")
+LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only")
+SHARED_PROMPT_CONDITIONS = ("prompt_off", "prose_only")
+FENCE_BAN_BIAS = -100.0
+
+
+def fence_token_ids(tok):
+    """Ids of every vocabulary token whose text contains a backtick. Byte-level BPE keeps the
+    backtick printable, so a substring test on the vocab catches ```, ``python, inline ` and
+    every merged variant. Banned under prose_only. [] if the tokenizer exposes no vocab."""
+    try:
+        vocab = tok.get_vocab()
+    except AttributeError:
+        return []
+    return sorted(i for t, i in vocab.items() if "`" in t)
 
 
 def build_prompt(template: str, question: str) -> str:
@@ -492,7 +509,7 @@ def main(argv=None):
         sys.exit(str(e))
 
     def template_for(cond):
-        if cond == "prompt_off":
+        if cond in SHARED_PROMPT_CONDITIONS:
             return args.shared_template
         if cond == "plain_cot":
             return args.plain_template
@@ -545,14 +562,19 @@ def main(argv=None):
     llm = LLM(**kw)
     tok = llm.get_tokenizer()
     print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
+    fence_ids = fence_token_ids(tok)
+    arm_bias = {"logit_bias": None}   # set per arm: the backtick ban under prose_only, else None
 
     def tokenize_len(text):
         return len(tok(text, add_special_tokens=False)["input_ids"])
 
     def sp(n, max_tokens, stops, seed=None):
-        return SamplingParams(n=n, temperature=args.temperature, top_p=args.top_p,
-                              seed=args.seed if seed is None else seed,
-                              max_tokens=max_tokens, stop=stops, include_stop_str_in_output=True)
+        kw = dict(n=n, temperature=args.temperature, top_p=args.top_p,
+                  seed=args.seed if seed is None else seed,
+                  max_tokens=max_tokens, stop=stops, include_stop_str_in_output=True)
+        if arm_bias["logit_bias"]:
+            kw["logit_bias"] = arm_bias["logit_bias"]
+        return SamplingParams(**kw)
 
     def generate(prompts, stops, budgets, seeds):
         params = [sp(1, b, stops, seed) for b, seed in zip(budgets, seeds)]
@@ -601,6 +623,13 @@ def main(argv=None):
         for cond, template in plan[ds]:
             t1 = time.time()
             path = out_path(ds, cond, template)
+            if cond == "prose_only":
+                if not fence_ids:
+                    print("   WARNING: tokenizer exposes no vocab, the backtick ban is empty; prose_only == prompt_off", flush=True)
+                arm_bias["logit_bias"] = {i: FENCE_BAN_BIAS for i in fence_ids}
+                print(f"   prose_only: {len(fence_ids)} backtick tokens banned", flush=True)
+            else:
+                arm_bias["logit_bias"] = None
             if args.overwrite:
                 partial_path(path).unlink(missing_ok=True)
             kept, _ = read_partial(path, ns)

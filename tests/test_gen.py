@@ -209,6 +209,14 @@ def test_dataset_specs_and_gsm_gold():
     assert gen.gsm_gold(2.5) is None and gen.gsm_gold(float("nan")) is None and gen.gsm_gold("x") is None
     assert gen.gsm_gold(1e16) is None
 
+def test_fence_token_ids():
+    class Tok:
+        def get_vocab(self):
+            return {"a": 0, "```": 1, "``": 2, "`python": 3, "Ġ`": 4, "x": 5, "```Ċ": 6}
+    assert gen.fence_token_ids(Tok()) == [1, 2, 3, 4, 6]
+    assert gen.fence_token_ids(object()) == []
+    assert "prose_only" in gen.CONDITIONS and "prose_only" in gen.LOOP_CONDITIONS
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
