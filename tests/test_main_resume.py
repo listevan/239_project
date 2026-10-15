@@ -221,6 +221,31 @@ def test_prose_only_bans_backticks_and_uses_shared_prompt():
         assert len(recs) == N_PROBLEMS * N and all(r["n_calls"] == 0 for r in recs)
         assert json.load(open(gen.meta_path(arm)))["condition"] == "prose_only"
 
+def test_overwrite_conditions_redoes_only_those():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.biases, FakeLLM.crash_on_call = [], [], None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off,env_denied", "--n", str(N),
+                      "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade"])
+        po = out / "math500" / "base__prompt_off__qwen_math_nocode.jsonl"
+        ed = out / "math500" / "base__env_denied__qwen_math_tir.jsonl"
+        m_po, m_ed = gen.meta_path(po).stat().st_mtime_ns, gen.meta_path(ed).stat().st_mtime_ns
+        FakeLLM.calls = []
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prompt_off,env_denied", "--n", str(N),
+                      "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade",
+                      "--overwrite-conditions", "env_denied"])
+        assert "todo=math500/env_denied" in buf.getvalue() and len(FakeLLM.calls) == 1
+        assert gen.meta_path(po).stat().st_mtime_ns == m_po and gen.meta_path(ed).stat().st_mtime_ns > m_ed
+        try:
+            gen.main(["--model", "m/base", "--tag", "base", "--out", str(out), "--overwrite-conditions", "nope"])
+            raise AssertionError("expected SystemExit")
+        except SystemExit as e:
+            assert "unknown condition" in str(e)
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

@@ -294,7 +294,8 @@ PLAIN_COT = False          # True adds the non-intercepting plain_cot arm (CIR's
 DENIAL_TEXT = None         # None = "No interpreter is available; the code was not executed. ..."
 GPU_MEM = 0.90
 CHUNK = 100                # problems per checkpoint; a disconnect loses at most this much work
-OVERWRITE = False          # True regenerates arms that are already on Drive
+OVERWRITE = False          # False: generate only missing arms. True: redo everything. A list such as
+                           # ["prose_only"] redoes just those conditions and keeps the rest.
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 import datetime, json, os
@@ -339,8 +340,8 @@ for that model:
 
 So after a disconnect, reconnect, re-run cells 1 to 4 (install, Drive, code,
 config, with `RUN_ID` set to the run you were on if the date changed), then re-run
-the model cell that was going. Finished arms and finished chunks are never redone
-unless `OVERWRITE = True`. The model is loaded once and runs every dataset in
+the model cell that was going. Finished arms and finished chunks are never redone unless `OVERWRITE` says so (`True` for everything, a list
+such as `["prose_only"]` for those conditions only). The model is loaded once and runs every dataset in
 `DATASETS`. The three cells can run in any order, one at a time (one GPU). Each one
 ends with a quick table per dataset read back from Drive. The first run of each
 model spends a few minutes downloading weights.
@@ -523,7 +524,8 @@ def run_model(tag):
     spec = PRESETS[PRESET]["models"][tag]
     print(f"[{tag}] {spec['model']}  ->  {OUT}")
     if status(tag) == 0 and not OVERWRITE:
-        print(f"[{tag}] every arm is already on Drive, loading instead of regenerating")
+        print(f"[{tag}] every arm is already on Drive, loading instead of regenerating\n"
+              "  (a condition missing from the list above? pull the repo so the notebook has it, re-run the config cell)")
     elif not shutil.which("nvidia-smi"):
         print(f"[{tag}] arms are missing but this runtime has NO GPU, nothing generated.\n"
               "  Colab: Runtime > Change runtime type > GPU. VS Code: reconnect choosing a GPU runtime.\n"
@@ -539,8 +541,10 @@ def run_model(tag):
                "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--chunk", str(CHUNK), "--out", OUT]
         if ALLOW_LONG:
             cmd.append("--allow-long")
-        if OVERWRITE:
+        if OVERWRITE is True:
             cmd.append("--overwrite")
+        elif OVERWRITE:
+            cmd += ["--overwrite-conditions", ",".join(OVERWRITE)]
         if not GRADE_ON_COLAB:
             cmd.append("--no-grade")
         if DENIAL_TEXT:
