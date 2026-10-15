@@ -61,7 +61,9 @@ each condition is read as its own three-way comparison.
 | `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial message injected, nothing runs |
 | `env_denied` | the model's tool prompt (asks for code) | intercepted, denial message injected, nothing runs |
 | `tool_on` | the model's tool prompt | executed with `python -I`, 4-call budget, then the budget message |
-| `prose_only` | shared no-code prompt, plus a logit ban on every backtick token | cannot happen: no fence can open, so nothing is denied. The ability test. |
+| `prose_redirect` | shared no-code prompt | the fence opener is cut and "Let me do this computation by hand instead" is spliced in; after 4 redirects the backtick ban takes over. The ability test. |
+| `assist_denied` | the model's tool prompt | intercepted; the denial says no output exists, do not assume one, compute by hand step by step |
+| `prose_only` | shared no-code prompt plus a logit ban on every backtick token | nothing can open; kept for the record: ToRL and base answer the ban with unfenced Python and loop |
 | `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block. CIR's condition. |
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
@@ -299,7 +301,8 @@ OVERWRITE = False          # False: generate only missing arms. True: redo every
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 import datetime, json, os
-CONDITIONS = ["prompt_off", "env_denied", "prose_only", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
+CONDITIONS = ["prompt_off", "env_denied", "assist_denied", "prose_redirect", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
+# "prose_only" (backtick ban) is available but off: ToRL and base answer the ban with unfenced code and loop.
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
 OUT = f"{RUNS}/{RUN_ID}"
@@ -659,11 +662,9 @@ PLOT2 = r"""
 
 # Figure 1: within each model, what does turning the tool off cost?
 if df is not None:
-    an.plot(df, {
-        "base":    ["base prompt_off",    "base env_denied",    "base prose_only",    "base tool_on"],
-        "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl prose_only", "text_rl tool_on"],
-        "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl prose_only", "tool_rl tool_on"],
-    }, color="condition", title=f"{RUN_ID} / {SHOW}: pass@k within each model",
+    an.plot(df, {t: [f"{t} {c}" for c in ("prompt_off", "env_denied", "assist_denied", "prose_only", "prose_redirect", "tool_on")]
+                 for t in ("base", "text_rl", "tool_rl")},
+            color="condition", title=f"{RUN_ID} / {SHOW}: pass@k within each model",
        save=f"{OUT}/figures/passk_by_model_{SHOW}_{STAMP}.png", caption=CAPTION);
 """
 
@@ -675,6 +676,8 @@ if df is not None:
         ("denied",    ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"], "tool denied"),
         ("promptoff", ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"], "told not to code"),
         ("prose",     ["tool_rl prose_only", "text_rl prose_only", "base prose_only", "base tool_on"], "no code possible"),
+        ("redirect",  ["tool_rl prose_redirect", "text_rl prose_redirect", "base prose_redirect", "base tool_on"], "redirected to hand computation"),
+        ("assist",    ["tool_rl assist_denied", "text_rl assist_denied", "base assist_denied", "base tool_on"], "denied, told to compute by hand"),
         ("toolon",    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"], "with the tool"),
     ]:
         an.plot(df, arms, title=f"{RUN_ID} / {SHOW}: {ttl}, tool-RL vs text-RL vs base",
@@ -698,9 +701,12 @@ NEXT_MD = r"""
 - **prompt_off tests compliance too.** `called_pct` on those rows is how often a
   model wrote code after being told not to. A tool-RL model that cannot stop is
   itself a finding (ToRL: about 90% on AIME, Oat-Zero about 30%).
-- **prose_only is the ability test.** No fence can open, so there is no denial to
-  derail the model and no code to defer to; what is left is what it can compute by
-  hand. `env_denied` minus `prose_only` is the behavioural cost of the habit.
+- **prose_redirect is the ability test.** The fence is cut the moment it opens and
+  the model is steered into hand computation, so there is no denial to derail it
+  and no code to defer to. `assist_denied` keeps the code but tells the model to
+  compute by hand after the denial; `env_denied` minus `assist_denied` is the cost
+  of the fallback instruction being absent. (`prose_only`, the plain backtick ban,
+  made ToRL and base write unfenced code and loop; not an ability measure.)
 - **Compare to text_rl, not just base.** RL alone sharpens pass@1 and can lower
   high-k pass@k (the sharpening confound). The question is whether tool-RL sits
   below text-RL.

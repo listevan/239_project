@@ -246,6 +246,19 @@ def test_overwrite_conditions_redoes_only_those():
         except SystemExit as e:
             assert "unknown condition" in str(e)
 
+def test_redirect_and_assist_arms_use_the_right_templates():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.biases, FakeLLM.crash_on_call = [], [], None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "prose_redirect,assist_denied", "--n", str(N),
+                      "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade"])
+        assert (out / "math500" / "base__prose_redirect__qwen_math_nocode.jsonl").exists()
+        assert (out / "math500" / "base__assist_denied__qwen_math_tir.jsonl").exists()
+        assert FakeLLM.biases == [None, None]   # no arm-wide ban: the redirect ban is per sample, after the cap
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

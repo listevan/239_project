@@ -53,7 +53,7 @@ def test_grader():
 def scripted_generate(script):
     """script: {context_suffix_key: (text, finish, stop)} chosen by the number of
     ```output blocks already in the context (i.e. the round index)."""
-    def generate(prompts, stops, budgets, seeds=None):
+    def generate(prompts, stops, budgets, seeds=None, biases=None):
         outs = []
         for p in prompts:
             k = p.count("```output")
@@ -138,7 +138,7 @@ def test_round_cap_forces_final_round():
     pool = ThreadPoolExecutor(max_workers=1)
     calls = {"n": 0}
 
-    def generate(prompts, stops, budgets, seeds=None):
+    def generate(prompts, stops, budgets, seeds=None, biases=None):
         calls["n"] += 1
         if gen.STOP_FENCE not in stops:   # final round: no tool stops
             return [("final \\boxed{1}", 3, "stop", None) for _ in prompts]
@@ -216,6 +216,53 @@ def test_fence_token_ids():
     assert gen.fence_token_ids(Tok()) == [1, 2, 3, 4, 6]
     assert gen.fence_token_ids(object()) == []
     assert "prose_only" in gen.CONDITIONS and "prose_only" in gen.LOOP_CONDITIONS
+
+def test_prose_redirect_cuts_fence_and_bans_after_cap():
+    a = args(max_calls=1)
+    calls = []
+
+    def generate(prompts, stops, budgets, seeds=None, biases=None):
+        calls.append((stops, biases))
+        outs = []
+        per = stops if isinstance(stops[0], list) else [stops] * len(prompts)
+        for p, st in zip(prompts, per):
+            if p.count(gen.REDIRECT_TEXT) == 0:
+                outs.append(("Think.\n```python\n", 3, "stop", "```python\n"))          # tries to code
+            elif "9" not in p and "```\n" in st:
+                outs.append(("So 3 * 3 = 9. ```\n", 6, "stop", "```\n"))              # tries again: bare fence
+            else:
+                outs.append(("So 3 * 3 = 9. Hence \\boxed{9}<|im_end|>", 8, "stop", "<|im_end|>"))
+        return outs
+
+    s = gen.Sample(0, 0, "P")
+    gen.advance(s, "Think.\n```python\n", 3, "stop", "```python\n", "prose_redirect", a.max_calls)
+    assert s.gen == "Think.\n" + gen.REDIRECT_TEXT and s.n_calls == 1 and not s.done
+    pool = ThreadPoolExecutor(max_workers=1)
+    gen.run_tool_loop(generate, lambda t: len(t.split()), [s], "prose_redirect", a, pool, fence_bias={7: -100.0})
+    pool.shutdown()
+    assert s.finish == "eos" and "```" not in s.gen and gen.last_boxed(s.gen) == "9"
+    # after max_calls=1 redirects every later round had plain text stops and the backtick ban
+    assert all(st == [gen.TEXT_STOPS] and bi == [{7: -100.0}] for st, bi in calls)
+    assert s.gen.count(gen.REDIRECT_TEXT) == 1   # the bare fence in round 2 was not a redirect: the ban round has no fence stops
+    # a fresh sample with a higher cap gets fence stops and no ban while redirects remain
+    calls.clear()
+    s2 = gen.Sample(0, 1, "P")
+    gen.advance(s2, "Think.\n```python\n", 3, "stop", "```python\n", "prose_redirect", 4)
+    a4 = args(max_calls=4)
+    pool = ThreadPoolExecutor(max_workers=1)
+    gen.run_tool_loop(generate, lambda t: len(t.split()), [s2], "prose_redirect", a4, pool, fence_bias={7: -100.0})
+    pool.shutdown()
+    assert calls[0] == ([gen.TEXT_STOPS + list(gen.FENCE_OPEN_STOPS)], [None]) and s2.n_calls == 2
+    assert "```" not in s2.gen and s2.gen.count(gen.REDIRECT_TEXT) == 2 and gen.last_boxed(s2.gen) == "9"
+
+
+def test_assist_denied_uses_its_own_message():
+    s = gen.Sample(0, 0, "P")
+    gen.advance(s, "```python\nprint(2+2)\n```\n", 5, "stop", "```\n", "assist_denied", 4, denial="custom")
+    assert gen.DENIAL_ASSIST in s.gen and "custom" not in s.gen and s.n_denied == 1
+    s = gen.Sample(0, 0, "P")
+    gen.advance(s, "```python\nprint(2+2)\n```\n", 5, "stop", "```\n", "env_denied", 4, denial="custom")
+    assert "custom" in s.gen and gen.DENIAL_ASSIST not in s.gen
 
 if __name__ == "__main__":
     fails = 0

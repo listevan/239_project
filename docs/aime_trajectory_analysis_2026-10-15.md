@@ -133,3 +133,20 @@ same recipe minus the tool, and 60 problems is thin at pass@64.
 3. More problems at the hard end (AIME 2022 and 2023, HMMT) for pass@64 power.
 4. The 7B CIR checkpoint, which makes several calls per problem, for the scaling
    read.
+
+## Addendum, 15:18: the backtick ban (prose_only) is not an ability test
+
+| prose_only | AIME24 pass@1 / @64 | AIME25 | truncated | no box |
+|---|---|---|---|---|
+| ToRL | 0.04 / 0.27 | 0.03 / 0.27 | 69% | 66% |
+| Oat-Zero | 0.14 / 0.40 | 0.11 / 0.50 | 12 to 20% | 12 to 19% |
+| base | 0.04 / 0.27 | 0.03 / 0.37 | 67 to 70% | 60% |
+
+The ban held (zero backticks in 11,520 rows) but ToRL and the base answered it
+with unfenced Python: `print(sum(A))` repeated until the budget, repetitive tails
+in 53 to 60 percent of truncated samples, code mentioned in about 90 percent of
+samples. Banning a character does not remove the plan. Two replacements are in
+the code: `prose_redirect` cuts the fence the moment it opens and splices in "Let
+me do this computation by hand instead", with the ban only after four redirects;
+`assist_denied` keeps env_denied's setup and tells the model, in the denial, that
+no output exists and to compute by hand step by step.

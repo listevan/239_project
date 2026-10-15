@@ -12,9 +12,16 @@ Every model gets the same grid. Conditions:
                temp dir (NOT a sandbox: fine for Colab, not for a shared box).
                Calls past --max-calls get the budget message instead.
   prose_only   shared no-code prompt AND a logit ban on every token containing a
-               backtick, so no code fence can open: the model must compute by hand
-               from the start and nothing ever gets denied. The ability test; the
-               interceptor stays armed as a safety net (n_calls > 0 = the ban leaked).
+               backtick. Kept for the record: ToRL and the base answer the ban with
+               unfenced Python and loop until the budget ends (69% truncation), so
+               it measures a spiral, not ability. Use prose_redirect instead.
+  prose_redirect  shared no-code prompt. The moment the model opens a code fence the
+               opener is cut and "Let me do this computation by hand instead" is
+               spliced in, and generation continues. After --max-calls redirects the
+               backtick ban takes over for the rest of the sample. n_calls = redirects.
+  assist_denied  env_denied with a stronger denial: the message says no output exists,
+               do not assume one, compute by hand step by step. env_denied minus this
+               is the cost of the fallback instruction being absent.
   plain_cot    optional. Shared plain CoT prompt, one pass, no interception at
                all: the condition prior work (CIR) used. Code the model writes is
                just text and it will fabricate its own ```output block.
@@ -88,6 +95,11 @@ DENIAL_BUDGET = ("Tool call budget exceeded; the code was not executed. "
 DENIAL_UNAVAILABLE = ("No interpreter is available; the code was not executed. "
                       "Continue reasoning without running code and give the final answer.")
 DENIAL = DENIAL_UNAVAILABLE
+DENIAL_ASSIST = ("No interpreter is available; the code was not executed and produced no output. Do not assume "
+                 "what it would have printed. Carry out the computation by hand, step by step, writing out every "
+                 "intermediate value, and only then give the final answer.")
+REDIRECT_TEXT = "Let me do this computation by hand instead, step by step.\n"
+FENCE_OPEN_STOPS = ("```python\n", "```py\n", "```\n")   # a fence opening under prose_redirect
 
 STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # model opens the output block itself
@@ -95,9 +107,9 @@ TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
 
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
-CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot", "prose_only")
-LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only")
-SHARED_PROMPT_CONDITIONS = ("prompt_off", "prose_only")
+CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot", "prose_only", "prose_redirect", "assist_denied")
+LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only", "prose_redirect", "assist_denied")
+SHARED_PROMPT_CONDITIONS = ("prompt_off", "prose_only", "prose_redirect")
 FENCE_BAN_BIAS = -100.0
 
 
@@ -286,6 +298,12 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
     if finish_reason == "length":
         s.done, s.truncated, s.finish = True, True, "length"
         return None
+    if cond == "prose_redirect" and stop_reason in FENCE_OPEN_STOPS:
+        if s.gen.endswith(stop_reason):
+            s.gen = s.gen[:-len(stop_reason)]
+        s.n_calls += 1          # a redirect: the model tried to open a code block
+        s.gen += REDIRECT_TEXT
+        return REDIRECT_TEXT
     if stop_reason not in (STOP_FENCE, STOP_OUTPUT):
         s.done, s.finish = True, "eos"
         return None
@@ -297,7 +315,8 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
         result, err = executor(code)
         s.n_exec_err += int(err)
     else:
-        result = DENIAL_BUDGET if cond == "tool_on" else (denial or DENIAL_UNAVAILABLE)
+        result = (DENIAL_BUDGET if cond == "tool_on" else DENIAL_ASSIST if cond == "assist_denied"
+                  else (denial or DENIAL_UNAVAILABLE))
         s.n_denied += 1
     inj = ("\n" + result + "\n```\n") if stop_reason == STOP_OUTPUT else ("```output\n" + result + "\n```\n")
     s.gen += inj
@@ -335,8 +354,20 @@ def splice_round(pending, cond, args, pool):
         print(f"  executed in {time.time() - t0:.0f}s, {n_err} errored or timed out", flush=True)
 
 
-def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
-    """Rounds 2..N. generate(prompts, stops, budgets, seeds) -> [(text, n_tokens, finish, stop_reason)]."""
+def round_stops_and_biases(cond, keep, final, max_calls, fence_bias):
+    """Per-sample stop strings and logit biases for one round. Under prose_redirect a sample that has
+    used up its redirects (or is in the final round) gets plain text stops and the backtick ban."""
+    if cond == "prose_redirect":
+        spent = [final or s.n_calls >= max_calls for s in keep]
+        stops = [TEXT_STOPS if sp_ else TEXT_STOPS + list(FENCE_OPEN_STOPS) for sp_ in spent]
+        biases = [fence_bias if sp_ else None for sp_ in spent]
+        return stops, biases
+    return (TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)), None
+
+
+def run_tool_loop(generate, tokenize_len, samples, cond, args, pool, fence_bias=None):
+    """Rounds 2..N. generate(prompts, stops, budgets, seeds, biases=None) -> [(text, n_tokens, finish, stop_reason)];
+    stops may be one list for every prompt or a list per prompt."""
     max_rounds = 2 * args.max_calls + 6
     rnd, t0 = 1, time.time()
     while True:
@@ -355,12 +386,12 @@ def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
         if not keep:
             break
         final = any(s.rounds >= max_rounds for s in keep)
-        stops = TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)
+        stops, biases = round_stops_and_biases(cond, keep, final, args.max_calls, fence_bias)
         print(f"  round {rnd}: {len(keep)} of {len(samples)} samples still generating"
               f"{' (final round, no more tool stops)' if final else ''}, {time.time() - t0:.0f}s into the loop",
               flush=True)
         seeds = [(args.seed * 1_000_003 + s.pidx * 4096 + s.sidx * 64 + s.rounds) % (2 ** 31) for s in keep]
-        outs = generate([s.context for s in keep], stops, budgets, seeds)
+        outs = generate([s.context for s in keep], stops, budgets, seeds, biases)
         splice_round([(s,) + tuple(o) for s, o in zip(keep, outs)], cond, args, pool)
 
 
@@ -573,21 +604,25 @@ def main(argv=None):
     tok = llm.get_tokenizer()
     print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
     fence_ids = fence_token_ids(tok)
+    fence_bias = {i: FENCE_BAN_BIAS for i in fence_ids} or None
     arm_bias = {"logit_bias": None}   # set per arm: the backtick ban under prose_only, else None
 
     def tokenize_len(text):
         return len(tok(text, add_special_tokens=False)["input_ids"])
 
-    def sp(n, max_tokens, stops, seed=None):
+    def sp(n, max_tokens, stops, seed=None, bias=None):
         kw = dict(n=n, temperature=args.temperature, top_p=args.top_p,
                   seed=args.seed if seed is None else seed,
                   max_tokens=max_tokens, stop=stops, include_stop_str_in_output=True)
-        if arm_bias["logit_bias"]:
-            kw["logit_bias"] = arm_bias["logit_bias"]
+        lb = bias if bias is not None else arm_bias["logit_bias"]
+        if lb:
+            kw["logit_bias"] = lb
         return SamplingParams(**kw)
 
-    def generate(prompts, stops, budgets, seeds):
-        params = [sp(1, b, stops, seed) for b, seed in zip(budgets, seeds)]
+    def generate(prompts, stops, budgets, seeds, biases=None):
+        per_stops = stops if (stops and isinstance(stops[0], list)) else [stops] * len(prompts)
+        per_bias = biases or [None] * len(prompts)
+        params = [sp(1, b, st, seed, bias) for b, st, seed, bias in zip(budgets, per_stops, seeds, per_bias)]
         res = llm.generate(prompts, params, use_tqdm=True)
         outs = []
         for r in res:
@@ -609,7 +644,8 @@ def main(argv=None):
                         s.truncated, s.finish = True, "length"
                     samples.append(s)
             return samples
-        res = llm.generate(prompts, sp(n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
+        first_stops = TEXT_STOPS + list(FENCE_OPEN_STOPS if cond == "prose_redirect" else TOOL_STOPS)
+        res = llm.generate(prompts, sp(n, args.max_tokens, first_stops), use_tqdm=True)
         first = []
         for (pidx, _), prompt, r in zip(part, prompts, res):
             for sidx, o in enumerate(r.outputs):
@@ -618,7 +654,7 @@ def main(argv=None):
                 first.append((s, o.text, len(o.token_ids), o.finish_reason, o.stop_reason))
         pool = ThreadPoolExecutor(max_workers=args.exec_workers)
         splice_round(first, cond, args, pool)
-        run_tool_loop(generate, tokenize_len, samples, cond, args, pool)
+        run_tool_loop(generate, tokenize_len, samples, cond, args, pool, fence_bias=fence_bias)
         pool.shutdown(wait=True)
         return samples
 
