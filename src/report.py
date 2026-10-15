@@ -30,7 +30,7 @@ BY_MODEL = {
     "text_rl": ["text_rl prompt_off", "text_rl env_denied", "text_rl tool_on"],
     "tool_rl": ["tool_rl prompt_off", "tool_rl env_denied", "tool_rl tool_on"],
 }
-MAIN = ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on", "base prompt_off", "base tool_on"]
+MAIN = ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"]
 
 
 def find_runs_root(home=None):
@@ -79,7 +79,7 @@ def _report_frame(df, title, tag, stamp, cap, figs, tabs, ci, by_model):
         plt.close(fig)
         written.append(p)
     p = figs / f"passk_main_{tag}_{stamp}.png"
-    fig = an.plot(df, MAIN, ci=ci, title=f"{title}: tool-RL with the tool off vs control and base",
+    fig = an.plot(df, MAIN, ci=ci, title=f"{title}: tool denied, tool-RL vs text-RL vs base",
                   save=p, caption=cap)
     plt.close(fig)
     written.append(p)

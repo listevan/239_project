@@ -29,10 +29,8 @@ COND_MARK = {"prompt_off": "o", "env_denied": "s", "tool_on": "^", "plain_cot": 
 COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "tool_on": "#eda100", "plain_cot": "#008300"}
 ROLE_STYLE = {"base": "-", "text_rl": "--", "tool_rl": ":"}
 GRAY = "#52514e"
-# default arms of the headline figure: tool-RL with the tool off against the control and the base
-MAIN_ARMS = [("tool_rl", "prompt_off"),
-             ("text_rl", "prompt_off"), ("text_rl", "tool_on"),
-             ("base", "prompt_off"), ("base", "tool_on")]
+# default arms of the headline figure: every model asked for code and denied it, plus the base with the tool
+MAIN_ARMS = [("tool_rl", "env_denied"), ("text_rl", "env_denied"), ("base", "env_denied"), ("base", "tool_on")]
 
 
 def load_results(results_dir, allow_ungraded=False) -> pd.DataFrame:

@@ -56,8 +56,7 @@ def test_plot_main_default_arms_and_missing():
     df = synth()
     fig = an.plot_passk_main(df, ci=False)
     labels = [l.get_label() for l in fig.axes[0].get_lines()]
-    assert labels == ["tool_rl prompt_off", "text_rl prompt_off", "text_rl tool_on",
-                      "base prompt_off", "base tool_on"]
+    assert labels == ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         fig = an.plot_passk_main(df, arms=[("tool_rl", "plain_cot"), ("base", "prompt_off")], ci=True, iters=20)
@@ -83,7 +82,7 @@ def test_paste_cell_runs_against_uploaded_analyze():
             sys.modules["analyze"] = saved
         assert (out / "math500" / "passk_by_model.png").stat().st_size > 1000
         assert (out / "math500" / "passk_main.png").stat().st_size > 1000
-        assert len(ns["fig1"].axes) == 3 and len(ns["fig2"].axes[0].get_lines()) == 5
+        assert len(ns["fig1"].axes) == 3 and len(ns["fig2"].axes[0].get_lines()) == 5   # paste cell keeps its own list
 
 
 def test_plot_accepts_strings_tuples_lists_and_dicts():
