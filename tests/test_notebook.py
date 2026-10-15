@@ -47,17 +47,17 @@ def test_config_cell_builds_run_id_spec_and_config_json():
     with tempfile.TemporaryDirectory() as d:
         ns = dict(RUNS=str(Path(d) / "runs"))
         exec(compile(notebook_cell("DATASET_SPEC = "), "config_cell", "exec"), ns)
-        assert ns["SMOKE"] is True and ns["DATASET_SPEC"] == "aime24:6:4"
-        assert ns["RUN_ID"].endswith("_math-1.5b-smoke") and ns["RUN_ID"][:4].isdigit()
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime24:0:64,aime25:0:64"
+        assert ns["RUN_ID"].endswith("_math-1.5b") and ns["RUN_ID"][:4].isdigit()
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["datasets"] == {"aime24": [6, 4]} and cfg["run_id"] == ns["RUN_ID"]
+        assert cfg["datasets"] == {"aime24": [0, 64], "aime25": [0, 64]} and cfg["run_id"] == ns["RUN_ID"]
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            exec(compile(notebook_cell("DATASET_SPEC = ").replace("SMOKE = True", "SMOKE = False"), "config_cell", "exec"),
-                 dict(RUNS=str(Path(d) / "runs"), RUN_ID_OVERRIDE=None))
-        assert "runs on Drive: " + ns["RUN_ID"] in buf.getvalue()
+            exec(compile(notebook_cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True"), "config_cell", "exec"),
+                 dict(RUNS=str(Path(d) / "runs")))
+        assert "runs on Drive: " + ns["RUN_ID"] in buf.getvalue() and "_math-1.5b-smoke" in buf.getvalue()
         ns2 = dict(RUNS=str(Path(d) / "runs"))
-        src = notebook_cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace("MAX_TOKENS = 1024", "MAX_TOKENS = 999")
+        src = notebook_cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace("MAX_TOKENS = 3000", "MAX_TOKENS = 999")
         with contextlib.redirect_stdout(buf):
             exec(compile(src, "config_cell", "exec"), ns2)
         assert "DIFFERS in ['max_tokens']" in buf.getvalue()

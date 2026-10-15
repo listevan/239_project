@@ -78,8 +78,8 @@ Rough wall-clock on an A100 with vLLM for the default plan (AIME24 + AIME25 at
 | math-1.5b | 20 to 30 min | about 1 h |
 | math-7b | 1 to 1.5 h | 3 to 4 h |
 
-Run the **smoke test** first (about 10 minutes). It exercises every code path on
-6 AIME problems and tells you the pipeline is wired before you spend compute units.
+`SMOKE = True` in the config cell runs a 10-minute wiring check on 6 AIME problems
+instead of the real run; use it after changing code, not before every run.
 """
 
 GPU_CHECK = r"""
@@ -227,7 +227,7 @@ PRESETS = {
 }
 
 PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
-SMOKE = True               # True: a few problems per dataset, 4 samples, 1024 tokens, ~15 min. False: the real run.
+SMOKE = False              # False: the real run. True: 6 AIME problems x 4 samples x 1024 tokens, ~10 min wiring check.
 
 # name -> (problems, samples per problem); 0 problems = the whole set. The pilot is AIME.
 #   aime24 / aime25   30 problems each, the hard end where the interpreter should matter
