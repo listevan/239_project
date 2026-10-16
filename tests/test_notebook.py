@@ -47,10 +47,12 @@ def test_config_cell_builds_run_id_spec_and_config_json():
     with tempfile.TemporaryDirectory() as d:
         ns = dict(RUNS=str(Path(d) / "runs"))
         exec(compile(notebook_cell("DATASET_SPEC = "), "config_cell", "exec"), ns)
-        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime25:0:64,math500:0:16"
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime_all:0:64,olymmath_hard:0:64"
         assert ns["RUN_ID"].endswith("_verltool-1.5b") and ns["RUN_ID"][:4].isdigit()
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["datasets"] == {"aime25": [0, 64], "math500": [0, 16]} and cfg["run_id"] == ns["RUN_ID"]
+        assert cfg["datasets"] == {"aime_all": [0, 64], "olymmath_hard": [0, 64]} and cfg["run_id"] == ns["RUN_ID"]
+        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "no_code"],
+                                              "base": ["tool_on", "env_denied", "no_code"], "text_rl": ["no_code"]}
         assert {m["native"] for m in cfg["models"].values()} == {"verltool_torl"}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -213,6 +215,21 @@ def test_arm_of_unselected_condition_is_kept_and_shown():
             ns["show"]("base")
         assert set(df.condition) == {"prompt_off", "prose_only"} and "ignoring" not in buf.getvalue()
         assert "prose_only" in buf.getvalue()
+
+def test_per_model_conditions():
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "run"
+        ns = run_setup_namespace(out)
+        ns["PRESETS"]["t"]["models"]["text_rl"] = dict(model="m/text", native="qwen_math_tir")
+        ns["PRESETS"]["t"]["models"]["tool_rl"] = dict(model="m/tool", native="qwen_math_tir")
+        ns["CONDITIONS_BY_MODEL"] = {"base": ["tool_on", "no_code"], "text_rl": ["no_code"]}
+        assert [r[0] for r in ns["arm_files"]("text_rl", "math500")] == ["no_code"]
+        assert [r[0] for r in ns["arm_files"]("base", "math500")] == ["tool_on", "no_code"]
+        assert [r[0] for r in ns["arm_files"]("tool_rl", "math500")] == ["prompt_off", "env_denied", "tool_on"]  # fallback
+        (out / "math500").mkdir(parents=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert ns["status"]("text_rl") == 1
 
 if __name__ == "__main__":
     fails = 0

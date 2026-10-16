@@ -239,7 +239,7 @@ def grade_boxed(grade, text, gold):
 
 
 # --------------------------------------------------------------------------- data
-DATASETS = ("math500", "math500_l5", "aime24", "aime25", "gsm_hard")
+DATASETS = ("aime_all", "olymmath_hard", "math500", "math500_l5", "aime24", "aime25", "gsm_hard")
 
 
 def gsm_gold(target):
@@ -290,6 +290,23 @@ def load_problems(name: str, n_problems: int, seed: int):
         ds = load_dataset("math-ai/aime25", split="test")
         items = [dict(id=f"aime25-{r['id']}", problem=r["problem"], answer=str(r["answer"]),
                       subject="aime25", level="aime") for r in ds]
+    elif name == "aime_all":
+        # AIME 2022-2025, 120 problems: AI-MO's validation set (2022, 2023, 2024) plus math-ai/aime25.
+        ds = load_dataset("AI-MO/aimo-validation-aime", split="train")
+        items = []
+        for r in ds:
+            year = next((y for y in ("2022", "2023", "2024") if y in str(r.get("url", ""))), "20xx")
+            items.append(dict(id=f"aime{year}-{r['id']}", problem=r["problem"], answer=str(r["answer"]).strip(),
+                              subject=f"aime{year}", level="aime"))
+        for r in load_dataset("math-ai/aime25", split="test"):
+            items.append(dict(id=f"aime2025-{r['id']}", problem=r["problem"], answer=str(r["answer"]).strip(),
+                              subject="aime2025", level="aime"))
+    elif name == "olymmath_hard":
+        # OlymMATH en-hard (RUC-AIBOX, the CIR authors), 100 problems: the set behind CIR Fig. 6, where
+        # the tool-off curve fell below the base at high k. Answers mix integers and LaTeX.
+        ds = load_dataset("RUC-AIBOX/OlymMATH", "en-hard", split="test")
+        items = [dict(id=f"olymmath-{r['unique_id']}", problem=r["problem"], answer=str(r["answer"]).strip(),
+                      subject=r.get("subject"), level="olymmath-hard") for r in ds]
     elif name == "gsm_hard":
         # GSM8K with the numbers made large (PAL, Gao et al. 2022): easy reasoning, brutal arithmetic,
         # the set where an interpreter is load-bearing. 1319 rows, 1016 with integer answers kept.

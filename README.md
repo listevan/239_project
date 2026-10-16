@@ -51,9 +51,12 @@ without, plus the untrained base. `math-1.5b` (ToRL vs Oat-Zero) is kept, but th
 recipes differ in data and algorithm as well as the tool. The verdict reports
 tool_rl vs the base first (erosion) and tool_rl vs text_rl second (tool-specific).
 
-`DATASETS` maps each dataset to (problems, samples). Default: AIME25 x 64 then
-MATH-500 x 16. Also available: `aime24`, `gsm_hard` (GSM8K with huge numbers),
-`math500_l5` (the 134 level-5 problems). `RUN_ID` defaults to today's date plus the
+`DATASETS` maps each dataset to (problems, samples). Default: AIME 2022-2025
+(`aime_all`, 120 problems) and OlymMATH-Hard (`olymmath_hard`, 100), 64 samples
+each: hard sets where the interpreter is load-bearing. MATH-500 is not used for
+the atrophy test (the tool barely matters there). Arms per model: base and
+tool_rl run tool_on, env_denied and no_code; text_rl runs no_code only, to
+attribute a below-base result to the tool rather than to RL in general. `RUN_ID` defaults to today's date plus the
 preset; set it to an existing run to resume or extend one.
 
 ## Grade and analyze locally

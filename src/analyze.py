@@ -417,6 +417,11 @@ def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):
     print("  arithmetic error rate (%):", er.to_dict())
     below_base = any(res[("tool_rl", "base", k)][2] < 0 for k in (1, kmax))
     above_base = any(res[("tool_rl", "base", k)][1] > 0 for k in (1, kmax))
+    if cond == "tool_on":
+        print("  -> positive control (both with the tool): "
+              + ("tool_rl above base: tool training worked" if above_base else
+                 "tool_rl NOT above base with the tool: training did not take, tool-off results are hard to read"))
+        return
     print("  -> erosion test (vs untrained base): "
           + ("tool_rl BELOW its base: erosion" if below_base else
              "tool_rl above its base: no erosion" if above_base else "tool_rl level with its base: no erosion, no gain"))

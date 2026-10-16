@@ -52,7 +52,7 @@ each condition is read as its own three-way comparison.
 ```
 239_project/runs/2026-10-16_verltool-1.5b/
     config.json          the settings of this run
-    aime25/  math500/        one JSONL + meta per arm (more datasets if you add them)
+    aime_all/  olymmath_hard/   one JSONL + meta per arm
     figures/  tables/   written by report.py, every file dated
 ```
 
@@ -69,13 +69,13 @@ each condition is read as its own three-way comparison.
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
-Rough wall-clock on an A100 with vLLM for the default plan (AIME25 x 64 plus
-MATH-500 x 16, about 10k samples per arm, three conditions):
+Rough wall-clock on an A100 with vLLM for the default plan (AIME 2022-2025 and
+OlymMATH-Hard, 64 samples each, about 14k long samples per arm, 7 arms):
 
 | Preset | per model | whole grid |
 |---|---|---|
-| 1.5B presets | about 40 to 50 min | 2 to 2.5 h (AIME25 lands in the first 15 min of each model) |
-| 7B presets | 2 to 3 h | 7 to 8 h, split it over sessions |
+| 1.5B presets | base / tool_rl about 1.5 h, text_rl about 30 min | 3.5 to 4 h; AIME lands first in each model |
+| 7B presets | 4 to 5 h | 10 to 12 h, split it over sessions |
 
 `SMOKE = True` in the config cell runs a 10-minute wiring check on 6 AIME problems
 instead of the real run; use it after changing code, not before every run.
@@ -247,11 +247,18 @@ Caveat: 430 vs 360 steps. All three models get that training prompt here.
 first: below base is erosion (lost what it had), and that comparison has no recipe
 confound. tool_rl vs text_rl second: the tool-specific counterfactual.
 
-**Datasets.** `DATASETS` maps a name to (problems, samples per problem); 0 problems
-means the whole set. Default: AIME25 at 64 samples (the hard end, where the
-interpreter should matter) then MATH-500 at 16 (the compliance and format run).
-AIME24, GSM-Hard and the level-5 MATH-500 subset are one line each. The gate before
-any verdict: tool_on minus env_denied for the tool-RL model must be large on the set.
+**Datasets.** Two hard sets where the interpreter is load-bearing, 64 samples each:
+AIME 2022-2025 (`aime_all`, 120 problems; on AIME the tool was worth 14 to 15
+points to ToRL) and OlymMATH-Hard (`olymmath_hard`, 100 problems; the set behind
+CIR Fig. 6, the only published tool-off-below-base curve). MATH-500 is not used:
+the tool barely matters there, so it cannot show atrophy. If OlymMATH-Hard sits at
+the floor at 1.5B, swap in another hard set. The gate before any verdict: tool_on
+minus env_denied for the tool-RL model must be large on the set.
+
+**Arms per model.** The main test is tool_rl vs base with the tool off. base and
+tool_rl run all three conditions (tool_on is the positive control); text_rl runs
+only no_code, to attribute any below-base deficit to the tool rather than to RL
+(RL without a tool is known to fall below base at large k, Yue et al. 2504.13837).
 
 **Run id.** `RUN_ID` defaults to today's date plus the preset. Re-running the config
 cell on another day makes a new run folder; to resume or extend an earlier one (a
@@ -301,10 +308,10 @@ SMOKE = False              # False: the real run. True: 6 AIME problems x 4 samp
 #   math500  500 problems; the tool matters less here, but it is the compliance and format run
 # Also available:  "aime24": (0, 64)   "gsm_hard": (300, 16)   "math500_l5": (0, 16)
 if SMOKE:
-    DATASETS = {"aime25": (6, 4)}
+    DATASETS = {"aime_all": (6, 4)}
     MAX_TOKENS = 1024
 else:
-    DATASETS = {"aime25": (0, 64), "math500": (0, 16)}   # runs in this order: AIME25 lands first
+    DATASETS = {"aime_all": (0, 64), "olymmath_hard": (0, 64)}   # runs in this order: AIME lands first
     MAX_TOKENS = 3000
 RUN_ID = None              # None: today's date + preset, e.g. 2026-10-15_math-1.5b. To resume or extend an
                            # earlier run, set its id from the list printed below.
@@ -323,10 +330,18 @@ OVERWRITE = False          # False: generate only missing arms. True: redo every
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 import datetime, json, os
-# Three conditions, same training prompt in all three; only what happens to code differs.
-CONDITIONS = ["tool_on", "env_denied", "no_code"] + (["plain_cot"] if PLAIN_COT else [])
-# Optional extras: "prompt_off" (no-code prompt), "assist_denied" (denial + compute-by-hand instruction),
-# "prose_redirect", "prose_only" (backtick ban alone: ToRL and base write unfenced code and loop).
+# Same training prompt in every arm; only what happens to code differs (tool_on / env_denied / no_code).
+# Each model runs only the arms its comparison needs:
+#   main test       tool_rl vs base, both tool-off (env_denied, no_code): below base = atrophy
+#   positive ctrl   tool_rl vs base, both tool_on: tool training worked
+#   attribution     text_rl no_code: if tool_rl is below base, did RL without the tool do the same?
+CONDITIONS_BY_MODEL = {
+    "tool_rl": ["tool_on", "env_denied", "no_code"],
+    "base":    ["tool_on", "env_denied", "no_code"],
+    "text_rl": ["no_code"],
+}
+CONDITIONS = [c for c in ("tool_on", "env_denied", "no_code") if any(c in v for v in CONDITIONS_BY_MODEL.values())]
+# Optional extras for any model: "prompt_off", "assist_denied", "prose_redirect", "prose_only", "plain_cot".
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
 OUT = f"{RUNS}/{RUN_ID}"
@@ -336,13 +351,14 @@ print("runs on Drive:", ", ".join(existing) or "(none)")
 print("this run     :", RUN_ID, "->", OUT, "(resuming)" if RUN_ID in existing else "(new)")
 os.makedirs(OUT, exist_ok=True)
 CONFIG = dict(run_id=RUN_ID, preset=PRESET, smoke=SMOKE, datasets=DATASETS, conditions=CONDITIONS,
+              conditions_by_model=CONDITIONS_BY_MODEL,
               models=PRESETS[PRESET]["models"], max_tokens=MAX_TOKENS, max_model_len=MAX_MODEL_LEN,
               temperature=TEMPERATURE, top_p=TOP_P, seed=SEED, max_calls=MAX_CALLS, shared_template=SHARED_TEMPLATE,
               denial_text=DENIAL_TEXT, chunk=CHUNK, created=datetime.datetime.now().isoformat(timespec="seconds"))
 cfg_path = f"{OUT}/config.json"
 if os.path.exists(cfg_path):
     old = json.load(open(cfg_path))
-    diff = [k for k in ("preset", "datasets", "conditions", "max_tokens", "max_model_len", "temperature", "top_p",
+    diff = [k for k in ("preset", "datasets", "conditions_by_model", "max_tokens", "max_model_len", "temperature", "top_p",
                         "seed", "max_calls", "shared_template", "denial_text")
             if json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
     print(f"config.json from {old.get('created', '?')}" + (f"; DIFFERS in {diff}: finished arms keep their old settings. "
@@ -386,11 +402,16 @@ sys.path.insert(0, "src")
 import gen   # the file-naming rules (which conditions use the shared prompt) come from gen.py itself
 
 
+def conds_for(tag):
+    by = globals().get("CONDITIONS_BY_MODEL") or {}
+    return by.get(tag, CONDITIONS)
+
+
 def arm_files(tag, dataset, conditions=None):
     spec = PRESETS[PRESET]["models"][tag]
     out = Path(OUT) / dataset
     rows = []
-    for cond in (conditions or CONDITIONS):
+    for cond in (conditions or conds_for(tag)):
         tmpl = (SHARED_TEMPLATE if cond in gen.SHARED_PROMPT_CONDITIONS
                 else "qwen_math_cot" if cond == "plain_cot" else spec["native"])
         stem = out / f"{tag}__{cond}__{tmpl}"
@@ -564,7 +585,7 @@ def run_model(tag):
     else:
         cmd = [sys.executable, "src/gen.py",
                "--model", spec["model"], "--tag", tag,
-               "--conditions", ",".join(CONDITIONS),
+               "--conditions", ",".join(conds_for(tag)),
                "--shared-template", SHARED_TEMPLATE, "--native-template", spec["native"],
                "--dataset", DATASET_SPEC,
                "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),

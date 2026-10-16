@@ -197,6 +197,7 @@ def test_to_record_ungraded():
 
 def test_dataset_specs_and_gsm_gold():
     assert gen.parse_dataset_specs("math500", 0, 16) == [("math500", 0, 16)]
+    assert gen.parse_dataset_specs("aime_all::64,olymmath_hard:10", 0, 16) == [("aime_all", 0, 64), ("olymmath_hard", 10, 16)]
     assert gen.parse_dataset_specs("math500:20:4, aime24::64,gsm_hard:300,math500_l5", 0, 16) == \
         [("math500", 20, 4), ("aime24", 0, 64), ("gsm_hard", 300, 16), ("math500_l5", 0, 16)]
     for bad in ("nope", "", "math500:x"):
