@@ -1,55 +1,48 @@
 # 239_project: tool atrophy pilot
 
-Does RL with a code interpreter erode the reasoning the interpreter replaces? Three
-checkpoints from one base model, evaluated with the same prompt under three ways of
-handling code, on hard math where the tool matters.
+Does RL with a code interpreter erode the reasoning the interpreter replaces? A tool-RL
+checkpoint against the untrained model it started from, under three ways of handling code,
+on math where the tool helps but cannot replace the reasoning.
 
 ## Design
 
-| condition | what happens to code |
-|---|---|
-| `tool_on` | it runs (`python -I` in a temp dir, 10 s timeout, 4 calls, then a budget message) |
-| `env_denied` | it does not run: the output slot says "No interpreter is available; the code was not executed" |
-| `no_code` | it cannot be written: logit ban on backticks and program-only keywords ([docs/no_code_ban.md](docs/no_code_ban.md)) |
-
-| model | arms | |
+| condition | prompt | what happens to code |
 |---|---|---|
-| `tool_rl` | all three | VerlTool ToRL recipe on Qwen2.5-Math-1.5B, interpreter on (360 steps) |
-| `base` | all three | Qwen2.5-Math-1.5B, untrained |
-| `text_rl` | `no_code` | the same VerlTool recipe, interpreter off (430 steps) |
+| `tool_on` | the model's tool prompt | it runs (`python -I` in a temp dir, 10 s timeout, 4 calls, then a budget message) |
+| `env_denied` | the model's tool prompt | it does not run: the output slot says "No interpreter is available; the code was not executed" |
+| `plain` | the bare question, no wrapper | it cannot be written: logit ban on backticks and program-only keywords ([docs/no_code_ban.md](docs/no_code_ban.md)) |
 
-Both RL runs share data (MATH train), algorithm (GRPO n16 b128 lr1e-6, one tool call)
-and prompt; every arm uses that training prompt (`verltool_torl`, read from their
-released rollouts).
+| model | tool prompt | |
+|---|---|---|
+| `tool_rl` | `torl` (ToRL's own, verbatim) | GAIR/ToRL-1.5B, RL with the interpreter |
+| `base` | `qwen_math_tir` | Qwen/Qwen2.5-Math-1.5B, untrained (ToRL's starting point) |
+| `text_rl` | none for now | Oat-Zero, RL without a tool: only if tool_rl lands below base |
 
-- **Main test:** tool_rl vs base with the tool off (`env_denied`, `no_code`). Below
-  base is atrophy: the model lost something it had.
+- **Main test:** tool_rl vs base with the tool off (`env_denied`, `plain`). Below base is
+  atrophy: the model lost something it had.
 - **Positive control:** tool_rl above base with the tool on.
-- **Attribution:** RL without a tool can fall below base at large k by itself
-  (Yue et al. 2504.13837), so text_rl `no_code` shows whether a deficit belongs to the tool.
+- `plain` uses the bare question because it is this base model's best prompt: Liu et al.
+  (arXiv 2503.20783, Table 1) report Qwen2.5-Math-1.5B at AMC 43.4 with no template vs 32.5
+  with the Qwen chat template (greedy, 3000 tokens, boxed-only grading). Under the chat
+  template base derails and loops in ~43% of samples, which RL of any kind fixes, so a
+  handicapped base would hide atrophy.
 
-Datasets, 64 samples each:
+Pilot set: `amc24`, AMC 12 2024, 30 problems x 4 samples (pass@1 to pass@4).
 
-- `aime_all`: AIME 2022-2025, 120 problems, integer answers. On AIME the tool was
-  worth 14 to 15 points of pass@1 to ToRL-1.5B.
-- `olymmath_easy`: OlymMATH-EN-Easy, 100 AIME-level problems from printed sources,
-  released 2025, after Qwen2.5-Math. The Hard split floors at 1.5B (a stronger 1.5B
-  model scores 1.5% pass@1 on it), MATH-500 is too easy for the tool to matter.
-
-Caveat: AIME 2022-2024 may be in Qwen2.5-Math's pretraining data. It affects all
-three models alike, and the report lists each problem's year (`subject`) for a check.
+Known limitation: Qwen2.5-Math already reasons in Python-style code without running it, and
+RL amplifies that even with random rewards (Shao et al., arXiv 2506.10947). Nearly every
+released tool-RL math checkpoint is Qwen2.5-based, so no non-Qwen pair exists at this size.
 
 ## Pilot gates
 
 Each stage runs only if the one before passes; numbers are pass@k with strict boxed grading.
 
-1. **The tool matters** for tool_rl (tool_on far above env_denied and no_code). Passed:
-   AIME pass@64 0.47 on vs 0.24 off.
-2. **Positive control: tool_rl beats base with the tool.** FAILED for the VerlTool 360-step
-   checkpoint (pass@1 .163 vs .157, pass@16 .372 vs .392, inconclusive). Gate 1 could not catch
-   this, because the interpreter helps base by about 10 points too. Its tool-off scores are
-   therefore not a test of atrophy. Details and every audit finding: docs/audit_2026-10-16.md.
-3. Main comparison and scale-up: on hold until a tool checkpoint passes gate 2.
+1. **Positive control: tool_rl beats base with the tool.** ToRL-1.5B passes (AIME24 .272 vs
+   .123; AMC24 .508 vs .117). The VerlTool 360-step checkpoint failed it (.163 vs .157) and was
+   dropped (docs/audit_2026-10-16.md).
+2. **Base is capable tool-free** (`plain` pass@1 about .25 or more), so a drop is measurable.
+   AMC24 v1 (chat prompt): .150, failed; rerun with the bare question.
+3. Main comparison and scale-up only after both pass.
 
 ## Contamination check (2026-10-16)
 

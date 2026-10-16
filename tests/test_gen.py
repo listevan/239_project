@@ -129,7 +129,7 @@ def test_code_token_ids():
 
 def test_dataset_specs_and_loaders():
     assert gen.parse_dataset_specs("aime_all::64,olymmath_easy:10", 0, 16) == [("aime_all", 0, 64), ("olymmath_easy", 10, 16)]
-    assert gen.template_for("plain", "torl") == "qwen_math_cot" and gen.template_for("env_denied", "torl") == "torl"
+    assert gen.template_for("plain", "torl") == "none" and gen.template_for("env_denied", "torl") == "torl"
     assert gen.build_prompt("torl", "Q").endswith("\\boxed{}.\nQ\nAssistant:")
     for bad in ("nope", "", "aime_all:x"):
         try:

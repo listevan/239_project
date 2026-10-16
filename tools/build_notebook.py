@@ -31,7 +31,7 @@ checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 | `tool_on` | the model's tool prompt | it runs (`python -I`, 10 s timeout, 4 calls) |
 | `env_denied` | the model's tool prompt | not run; the output slot says "No interpreter is available" |
 | `no_code` | the model's tool prompt | cannot be written: logit ban on backticks and program-only keywords |
-| `plain` | plain step-by-step prompt | cannot be written (same ban): the best case for tool-free reasoning |
+| `plain` | the bare question, no prompt (the best prompt for this base model) | cannot be written (same ban): the best case for tool-free reasoning |
 
 | model | arms | |
 |---|---|---|
@@ -118,7 +118,7 @@ MODELS = {
     "base":    "Qwen/Qwen2.5-Math-1.5B",          # the untrained start
     "text_rl": "sail/Qwen2.5-Math-1.5B-Oat-Zero", # RL without a tool (different recipe): attribution only
 }
-TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plain" always uses qwen_math_cot
+TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plain" always uses the bare question
     "tool_rl": "torl",            # ToRL's own raw prompt (paper Fig. 3)
     "base":    "qwen_math_tir",   # the Qwen2.5-Math tool-integrated prompt
     "text_rl": "qwen_math_tir",

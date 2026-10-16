@@ -62,11 +62,15 @@ TEMPLATES = {
         "to solve the problem above, and put your final answer within \\boxed{}.:\n<|im_end|>\n"
         "<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
     ),
+    # the bare question: the best prompt for Qwen2.5-Math base (Liu et al. 2025, arXiv 2503.20783, Table 1:
+    # Qwen2.5-Math-1.5B AMC 43.4 with no template vs 32.5 with qwen_math_cot, greedy, 3000 tokens, boxed-only
+    # grading). The chat wrapper makes base derail and loop.
+    "none": "{q}",
 }
 
 CONDITIONS = ("tool_on", "env_denied", "no_code", "plain")
 BANNED = ("no_code", "plain")                 # arms run under the code-token ban
-COND_TEMPLATE = {"plain": "qwen_math_cot"}    # conditions with a fixed prompt; the rest use --template
+COND_TEMPLATE = {"plain": "none"}             # conditions with a fixed prompt; the rest use --template
 
 
 def template_for(cond, template):
