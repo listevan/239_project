@@ -145,7 +145,7 @@ def test_overwrite_conditions_and_multi_dataset():
         log = buf.getvalue()
         assert log.count("loaded m/base") == 1 and "todo=olymmath_easy/no_code" in log
         assert len(records(arm(out, "no_code", "olymmath_easy"))) == 3
-        for bad in (["--conditions", "prompt_off"], ["--overwrite-conditions", "nope"], ["--dataset", "math500"]):
+        for bad in (["--conditions", "prompt_off"], ["--overwrite-conditions", "nope"], ["--dataset", "no_such_set"]):
             try:
                 gen.main(["--model", "m", "--tag", "base", "--out", str(out), *bad])
                 raise AssertionError(bad)
@@ -181,6 +181,21 @@ def test_resume_never_mixes_settings_and_redo_resumes_after_crash():
         FakeLLM.calls, FakeLLM.crash_on_call = [], None
         log = run(out, "--temperature", "1.0", conds="tool_on")
         assert "resuming, 2 problems already on disk" in log and arm(out, "tool_on").exists()
+
+def test_plain_arm_uses_cot_prompt_and_ban():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "env_denied,plain", "--template", "torl",
+                      "--n", str(N), "--chunk", "0", "--dataset", "amc23", "--out", str(out)])
+        assert (out / "amc23" / "base__env_denied__torl.jsonl").exists()
+        assert (out / "amc23" / "base__plain__qwen_math_cot.jsonl").exists()
+        assert FakeLLM.biases == [None, {7: -100.0, 8: -100.0, 10: -100.0}]
+        assert FakeLLM.calls[0][0].endswith("Assistant:") and FakeLLM.calls[1][0].startswith("<|im_start|>system\nPlease reason")
+        meta = json.load(open(out / "amc23" / "base__plain__qwen_math_cot.meta.json"))
+        assert meta["template_used"] == "qwen_math_cot" and meta["n_banned"] == 3
 
 if __name__ == "__main__":
     fails = 0

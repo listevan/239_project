@@ -129,6 +129,8 @@ def test_code_token_ids():
 
 def test_dataset_specs_and_loaders():
     assert gen.parse_dataset_specs("aime_all::64,olymmath_easy:10", 0, 16) == [("aime_all", 0, 64), ("olymmath_easy", 10, 16)]
+    assert gen.template_for("plain", "torl") == "qwen_math_cot" and gen.template_for("env_denied", "torl") == "torl"
+    assert gen.build_prompt("torl", "Q").endswith("\\boxed{}.\nQ\nAssistant:")
     for bad in ("nope", "", "aime_all:x"):
         try:
             gen.parse_dataset_specs(bad, 0, 16)
@@ -138,7 +140,10 @@ def test_dataset_specs_and_loaders():
     fake = {("AI-MO/aimo-validation-aime", None, "train"): [dict(id=60, problem="P60", answer=204, url="https://aops/2024_AIME_I/1"),
                                                             dict(id=1, problem="P1", answer="7", url="https://aops/2022_AIME_II/3")],
             ("math-ai/aime25", None, "test"): [dict(id=0, problem="Q0", answer="70")],
-            ("RUC-AIBOX/OlymMATH", "en-easy", "test"): [dict(unique_id="e1", problem="O1", answer="\\frac{1}{2}", subject="Algebra")]}
+            ("RUC-AIBOX/OlymMATH", "en-easy", "test"): [dict(unique_id="e1", problem="O1", answer="\\frac{1}{2}", subject="Algebra")],
+            ("math-ai/amc23", None, "test"): [dict(id=3, question="A3", answer="3159", url="u")],
+            ("HuggingFaceH4/MATH-500", None, "test"): [dict(unique_id=f"m{i}", problem=f"M{i}", answer="1", subject="Algebra",
+                                                            level=i) for i in range(1, 6)]}
     mod = types.ModuleType("datasets")
     mod.load_dataset = lambda name, cfg=None, split=None: fake[(name, cfg, split)]
     saved = sys.modules.get("datasets")
@@ -150,6 +155,9 @@ def test_dataset_specs_and_loaders():
         o = gen.load_problems("olymmath_easy", 0, 0)
         assert o == [dict(id="olymmath-e1", problem="O1", answer="\\frac{1}{2}", subject="Algebra", level="olymmath-easy")]
         assert len(gen.load_problems("aime_all", 2, 0)) == 2
+        assert gen.load_problems("amc23", 0, 0) == [dict(id="amc23-3", problem="A3", answer="3159", subject="amc23", level="amc")]
+        assert [x["level"] for x in gen.load_problems("math500_l35", 0, 0)] == ["3", "4", "5"]
+        assert len(gen.load_problems("math500", 0, 0)) == 5
     finally:
         if saved is None:
             del sys.modules["datasets"]

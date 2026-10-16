@@ -10,6 +10,8 @@ training prompt) everywhere; only what happens to code differs:
               available; the code was not executed. ..." and generation continues.
   no_code     code cannot be written: a logit ban on every backtick token and on the
               program-only keywords (docs/no_code_ban.md). Nothing is intercepted or inserted.
+  plain       the best case for tool-free reasoning: the plain step-by-step prompt (qwen_math_cot,
+              which does not invite code) plus the same ban. Same prompt for every model.
 
 Rows are written with correct = null; src/grade.py grades them on any machine. Only main()
 imports vllm and torch, so everything else runs in the laptop tests.
@@ -36,6 +38,23 @@ from pathlib import Path
 # read from their released training rollouts (step_records) on 2026-10-15: VerlTool's system
 # prompt v1 as it stood in May 2025, Qwen chat format, system content ending in ".:\n".
 TEMPLATES = {
+    # verified 2026-10-13: the Qwen2.5-Math chain-of-thought prompt (also Oat-Zero's), the Qwen2.5-Math
+    # tool-integrated prompt, and ToRL's own raw prompt (ToRL paper Fig. 3, verbatim)
+    "qwen_math_cot": (
+        "<|im_start|>system\nPlease reason step by step, and put your final answer "
+        "within \\boxed{}.<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "qwen_math_tir": (
+        "<|im_start|>system\nPlease integrate natural language reasoning with programs to "
+        "solve the problem above, and put your final answer within \\boxed{}.<|im_end|>\n"
+        "<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "torl": (
+        "A conversation between User and Assistant. The user asks a question, and the "
+        "Assistant solves it.\nUser: Please integrate natural language reasoning with "
+        "programs to solve the problem above, and put your final answer within \\boxed{}.\n"
+        "{q}\nAssistant:"
+    ),
     "verltool_torl": (
         "<|im_start|>system\nA conversation between User and Assistant. The user asks a question, and the "
         "Assistant solves it. The assistant first thinks about the reasoning process in the mind and then "
@@ -45,7 +64,13 @@ TEMPLATES = {
     ),
 }
 
-CONDITIONS = ("tool_on", "env_denied", "no_code")
+CONDITIONS = ("tool_on", "env_denied", "no_code", "plain")
+BANNED = ("no_code", "plain")                 # arms run under the code-token ban
+COND_TEMPLATE = {"plain": "qwen_math_cot"}    # conditions with a fixed prompt; the rest use --template
+
+
+def template_for(cond, template):
+    return COND_TEMPLATE.get(cond, template)
 DENIAL = ("No interpreter is available; the code was not executed. "
           "Continue reasoning without running code and give the final answer.")
 DENIAL_BUDGET = ("Tool call budget exceeded; the code was not executed. "
@@ -150,7 +175,24 @@ def _load_olymmath_easy():
             for r in load_dataset("RUC-AIBOX/OlymMATH", "en-easy", split="test")]
 
 
-DATASETS = {"aime_all": _load_aime_all, "olymmath_easy": _load_olymmath_easy}
+def _load_math500(levels=None):
+    """MATH-500 (HuggingFaceH4/MATH-500); levels=(3, 4, 5) keeps the multi-step ones (about 370)."""
+    from datasets import load_dataset  # type: ignore
+    return [dict(id=r["unique_id"], problem=r["problem"], answer=str(r["answer"]).strip(), subject=r["subject"],
+                 level=str(r["level"]))
+            for r in load_dataset("HuggingFaceH4/MATH-500", split="test") if levels is None or int(r["level"]) in levels]
+
+
+def _load_amc23():
+    """AMC 2023 (math-ai/amc23), 40 problems, integer answers: competition problems where computation
+    helps but insight is still needed (between MATH and AIME)."""
+    from datasets import load_dataset  # type: ignore
+    return [dict(id=f"amc23-{r['id']}", problem=r["question"], answer=str(r["answer"]).strip(), subject="amc23",
+                 level="amc") for r in load_dataset("math-ai/amc23", split="test")]
+
+
+DATASETS = {"amc23": _load_amc23, "aime_all": _load_aime_all, "olymmath_easy": _load_olymmath_easy,
+            "math500": _load_math500, "math500_l35": lambda: _load_math500((3, 4, 5))}
 
 
 def parse_dataset_specs(spec: str, n_problems: int, n: int):
@@ -355,9 +397,9 @@ def meta_path(path: Path) -> Path:
     return path.with_suffix(".meta.json")
 
 
-def settings_fp(args, n):
+def settings_fp(args, n, template=None):
     """Short fingerprint of everything that shapes a sample; checkpoints only resume under the same one."""
-    keys = dict(model=args.model, template=args.template, temperature=args.temperature, top_p=args.top_p,
+    keys = dict(model=args.model, template=template or args.template, temperature=args.temperature, top_p=args.top_p,
                 max_tokens=args.max_tokens, max_model_len=args.max_model_len, max_calls=args.max_calls,
                 exec_timeout=args.exec_timeout, seed=args.seed, n=n)
     return hashlib.sha1(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:10]
@@ -492,7 +534,7 @@ def main(argv=None):
         sys.exit(str(e))
 
     def out_path(ds, cond):
-        return Path(args.out) / ds / f"{args.tag}__{cond}__{args.template}.jsonl"
+        return Path(args.out) / ds / f"{args.tag}__{cond}__{template_for(cond, args.template)}.jsonl"
 
     def force(cond):
         return args.overwrite or cond in redo
@@ -542,7 +584,7 @@ def main(argv=None):
 
     def run_part(part, cond, n):
         """Generate n samples for every (global_index, item) in `part`; returns Samples."""
-        prompts = [build_prompt(args.template, it["problem"]) for _, it in part]
+        prompts = [build_prompt(template_for(cond, args.template), it["problem"]) for _, it in part]
         res = llm.generate(prompts, sp(n, args.max_tokens, TEXT_STOPS + list(TOOL_STOPS)), use_tqdm=True)
         samples, first = [], []
         for (pidx, _), prompt, r in zip(part, prompts, res):
@@ -567,11 +609,11 @@ def main(argv=None):
         for cond in plan[ds]:
             t1 = time.time()
             path = out_path(ds, cond)
-            state["bias"] = ban if cond == "no_code" else None
-            if cond == "no_code":
-                print(f"   no_code: {len(ban)} backtick + program-keyword tokens banned"
+            state["bias"] = ban if cond in BANNED else None
+            if cond in BANNED:
+                print(f"   {cond}: {len(ban)} backtick + program-keyword tokens banned"
                       + ("" if ban else "  WARNING: the tokenizer exposes no vocab, nothing is banned"), flush=True)
-            fp = settings_fp(args, ns)
+            fp = settings_fp(args, ns, template_for(cond, args.template))
             if meta_path(path).exists():
                 # redo: forced, or the finished arm has fewer samples/problems than asked; set the old one
                 # aside first, so a crash during the redo resumes the redo instead of keeping the old arm
@@ -587,7 +629,7 @@ def main(argv=None):
             new_recs = []
             for ci, part in enumerate(chunks, 1):
                 tc = time.time()
-                recs = [to_record(s, items[s.pidx], cond, args.template, args.model, args.tag, ds, fp)
+                recs = [to_record(s, items[s.pidx], cond, template_for(cond, args.template), args.model, args.tag, ds, fp)
                         for s in run_part(part, cond, ns)]
                 print(f"   writing {len(recs)} records to {partial_path(path).name}...", flush=True)
                 write_jsonl(partial_path(path), recs)
@@ -598,7 +640,8 @@ def main(argv=None):
             write_jsonl_atomic(path, recs)
             meta = dict(vars(args), dataset=ds, n=ns, n_problems_requested=np_, condition=cond, dtype=dtype,
                         fp=fp, commit=commit,
-                        n_banned=len(ban) if cond == "no_code" else 0, graded=False, pass1=None,
+                        n_banned=len(ban) if cond in BANNED else 0, template_used=template_for(cond, args.template),
+                        graded=False, pass1=None,
                         n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
                         gen_seconds=time.time() - t1, total_gen_tokens=sum(r["gen_tokens"] for r in recs),
                         finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))

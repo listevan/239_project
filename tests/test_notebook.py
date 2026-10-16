@@ -28,7 +28,8 @@ def cell(marker):
 
 def setup_ns(out, datasets=None):
     datasets = datasets or {"aime_all": (0, 2)}
-    ns = dict(OUT=str(out), MODELS={"tool_rl": "m/tool", "base": "m/base", "text_rl": "m/text"}, TEMPLATE="verltool_torl",
+    ns = dict(OUT=str(out), MODELS={"tool_rl": "m/tool", "base": "m/base", "text_rl": "m/text"},
+              TEMPLATES={"tool_rl": "verltool_torl", "base": "verltool_torl", "text_rl": "verltool_torl"},
               CONDITIONS_BY_MODEL={"tool_rl": ["tool_on", "env_denied", "no_code"], "base": ["tool_on", "no_code"],
                                    "text_rl": ["no_code"]},
               DATASETS=datasets, DATASET_SPEC=",".join(f"{k}:{p}:{n}" for k, (p, n) in datasets.items()),
@@ -52,13 +53,15 @@ def test_config_cell():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = "), "config", "exec"), ns)
-        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime_all:0:16"
-        assert ns["RUN_ID"] == "2026-10-16_verltool-1.5b"
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "amc23:30:4"
+        assert ns["RUN_ID"].endswith("_torl-1.5b")
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "no_code"],
-                                              "base": ["tool_on", "env_denied", "no_code"], "text_rl": ["no_code"]}
-        assert cfg["template"] == "verltool_torl" and set(cfg["models"]) == {"tool_rl", "base", "text_rl"}
-        src = cell("DATASET_SPEC = ").replace("MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
+        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "no_code", "plain"],
+                                              "base": ["tool_on", "env_denied", "no_code", "plain"], "text_rl": ["plain"]}
+        assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "text_rl": "qwen_math_tir"}
+        assert cfg["models"]["tool_rl"] == "GAIR/ToRL-1.5B"
+        src = cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace(
+            "MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
         with contextlib.redirect_stdout(buf):
             exec(compile(src, "config", "exec"), dict(RUNS=str(runs)))
         assert "(resuming)" in buf.getvalue() and "changed ['max_tokens']" in buf.getvalue()
@@ -67,7 +70,7 @@ def test_config_cell():
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True"), "config", "exec"),
                  dict(RUNS=str(runs)))
-        assert "2026-10-16_verltool-1.5b-smoke (new)" in buf.getvalue()   # smoke never writes into the real run
+        assert "_torl-1.5b-smoke (new)" in buf.getvalue()   # smoke never writes into the real run
 
 
 def test_arm_files_status_and_show():

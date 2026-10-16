@@ -22,13 +22,13 @@ ROLE_ORDER = ["base", "tool_rl", "text_rl"]
 # dataviz reference palette, categorical slots 1-3 (CVD-validated): blue, orange, aqua
 ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
 ROLE_STYLE = {"base": "-", "tool_rl": ":", "text_rl": "--"}
-COND_ORDER = ["tool_on", "env_denied", "no_code"]
+COND_ORDER = ["tool_on", "env_denied", "no_code", "plain"]
 # conditions get hues of their own (slots 4, 8, 6 of the same palette) so a per-model panel never reuses a
 # model color; conditions from older runs keep the colors they were plotted with
-COND_COLOR = {"tool_on": "#eda100", "env_denied": "#e34948", "no_code": "#008300",
+COND_COLOR = {"tool_on": "#eda100", "env_denied": "#e34948", "no_code": "#008300", "plain": "#6250d6",
               "prompt_off": "#6250d6", "assist_denied": "#1c5cab", "prose_only": "#e87ba4", "prose_redirect": "#52514e"}
-COND_STYLE = {"tool_on": ":", "env_denied": "--", "no_code": "-"}
-COND_MARK = {"tool_on": "^", "env_denied": "s", "no_code": "D"}
+COND_STYLE = {"tool_on": ":", "env_denied": "--", "no_code": "-", "plain": "-."}
+COND_MARK = {"tool_on": "^", "env_denied": "s", "no_code": "D", "plain": "o"}
 GRAY = "#52514e"
 # unfenced code in a response (no_code leaks it: the ban stops fences, not every way of spelling code)
 CODE_LIKE = re.compile(r"^\s*(python\s*$|import |from \S+ import|def \w+\(|print\(|for \w+ in range\()|\\text\{import",

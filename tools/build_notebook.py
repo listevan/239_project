@@ -24,43 +24,31 @@ INTRO = r"""
 # Tool atrophy pilot
 
 Does RL with a code interpreter erode the reasoning the interpreter replaces? Three
-checkpoints from one base model, the same prompt everywhere, and three ways of
-handling code:
+checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 
-| condition | what happens to code |
-|---|---|
-| `tool_on` | it runs (`python -I`, 10 s timeout, 4 calls) |
-| `env_denied` | it does not run; the output slot says "No interpreter is available" |
-| `no_code` | it cannot be written: logit ban on backticks and program-only keywords (docs/no_code_ban.md) |
-
-| model | arms | role |
+| condition | prompt | what happens to code |
 |---|---|---|
-| `tool_rl` | all three | RL with the interpreter (VerlTool ToRL recipe) |
-| `base` | all three | Qwen2.5-Math-1.5B, untrained |
-| `text_rl` | `no_code` | the same RL recipe without the interpreter |
+| `tool_on` | the model's tool prompt | it runs (`python -I`, 10 s timeout, 4 calls) |
+| `env_denied` | the model's tool prompt | not run; the output slot says "No interpreter is available" |
+| `no_code` | the model's tool prompt | cannot be written: logit ban on backticks and program-only keywords |
+| `plain` | plain step-by-step prompt | cannot be written (same ban): the best case for tool-free reasoning |
 
-**Main test:** tool_rl vs base with the tool off; below base is atrophy. **Positive
-control:** tool_rl above base with the tool on. **Attribution:** RL without a tool can
-fall below base at large k on its own (Yue et al. 2504.13837), so text_rl `no_code`
-shows whether a deficit belongs to the tool.
+| model | arms | |
+|---|---|---|
+| `tool_rl` | all four | GAIR/ToRL-1.5B, RL with the interpreter |
+| `base` | all four | Qwen2.5-Math-1.5B, untrained |
+| `text_rl` | `plain` | Oat-Zero, RL without a tool (different recipe): attribution only |
 
-**Datasets:** AIME 2022-2025 (120 problems) and OlymMATH-Easy (100 AIME-level
-problems from printed sources, 2025). Hard enough that the tool matters, not so
-hard that a 1.5B model floors.
+**Read in order:** `tool_on` first (positive control: tool_rl must beat base with the
+tool), then tool_rl vs base with the tool off (below base = atrophy), then text_rl
+`plain` for whether any gap belongs to the tool.
 
-**Staged, with gates.** Stage 1 (done): tool_rl on both sets x 64; the tool matters
-(AIME pass@64 0.47 with it, 0.24 without). Stage 2 (this config): base and text_rl
-on AIME x 16, about 40 min, compared with tool_rl at pass@16. Stage 3 only if stage 2
-leaves the comparison too close to call. Run `run_model("base")`, then
-`run_model("text_rl")`; the tool_rl cell reports its arms done.
+**Pilot size:** AMC 2023, 30 problems x 4 samples (pass@1 to pass@4), 9 arms, about
+20 minutes. Problems where computation helps but insight is still needed, and base
+already solves a fair share.
 
-**Run:** cells 1 to 6 once per session, then the model cells. Every arm checkpoints
-to Drive every `CHUNK` problems and finished arms are never redone, so after a
-disconnect re-run cells 1 to 6 and the model cell that was going. Keep `RUN_ID`
-pointing at the stage-1 run so the arms land together.
-
-**Then on the laptop:** `uv run src/report.py --run <run id>` grades, prints the
-tables and verdicts, and saves dated figures to the run folder.
+**Run:** cells 1 to 6, then the three model cells. Then on the laptop:
+`uv run src/report.py --run <run id>`.
 """
 
 GPU_CHECK = r"""
@@ -120,24 +108,25 @@ print(subprocess.run(["git", "log", "-1", "--format=%h  %s  (%cr)"], capture_out
 CONFIG = r"""
 # 5. Configure
 import datetime, json, os
-PRESET = "verltool-1.5b"
-MODELS = {   # VerlTool's ToRL recipe on Qwen2.5-Math-1.5B (MATH train, GRPO n16 b128 lr1e-6, 1 call), tool on vs off
-    "tool_rl": "VerlTool/torl-fsdp_agent-qwen_qwen2.5-math-1.5b-grpo-n16-b128-t1.0-lr1e-6new-no-toolusepenalty-360-step",
-    "base":    "Qwen/Qwen2.5-Math-1.5B",
-    "text_rl": "VerlTool/torl-fsdp-qwen_qwen2.5-math-1.5b-grpo-n16-b128-t1.0-lr1e-6new-no-toolusepenalty-430-step",
+PRESET = "torl-1.5b"
+MODELS = {
+    "tool_rl": "GAIR/ToRL-1.5B",                  # RL with a code interpreter; beats base with the tool
+    "base":    "Qwen/Qwen2.5-Math-1.5B",          # the untrained start
+    "text_rl": "sail/Qwen2.5-Math-1.5B-Oat-Zero", # RL without a tool (different recipe): attribution only
 }
-TEMPLATE = "verltool_torl"     # the training prompt of both VerlTool runs; every model and arm gets it
+TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plain" always uses qwen_math_cot
+    "tool_rl": "torl",            # ToRL's own raw prompt (paper Fig. 3)
+    "base":    "qwen_math_tir",   # the Qwen2.5-Math tool-integrated prompt
+    "text_rl": "qwen_math_tir",
+}
 CONDITIONS_BY_MODEL = {
-    "tool_rl": ["tool_on", "env_denied", "no_code"],
-    "base":    ["tool_on", "env_denied", "no_code"],
-    "text_rl": ["no_code"],
+    "tool_rl": ["tool_on", "env_denied", "no_code", "plain"],
+    "base":    ["tool_on", "env_denied", "no_code", "plain"],
+    "text_rl": ["plain"],
 }
-SMOKE = False                  # True: 6 AIME problems x 4 samples x 1024 tokens, a 10-minute wiring check
-# Staged pilot, each stage gated on the previous one (README, "Pilot gates"):
-#   stage 1  tool_rl, AIME + OlymMATH x 64        done 2026-10-16: the tool matters (pass@64 0.47 on vs 0.24 off)
-#   stage 2  base and text_rl, AIME x 16          the main comparison at pass@16, about 40 min
-#   stage 3  scale samples / OlymMATH only if stage 2 is close and needs the power
-DATASETS = {"aime_all": (6, 4)} if SMOKE else {"aime_all": (0, 16)}   # (problems, samples); stage 3: {"aime_all": (0, 64), "olymmath_easy": (0, 64)}
+SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
+# Pilot: one set, ~30 problems, pass@1..4. AMC 2023: computation helps, insight is still needed.
+DATASETS = {"amc23": (6, 2)} if SMOKE else {"amc23": (30, 4)}   # (problems, samples)
 MAX_TOKENS = 1024 if SMOKE else 3000
 MAX_MODEL_LEN = 4096
 TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0
@@ -145,7 +134,7 @@ MAX_CALLS = 4
 GPU_MEM = 0.90
 CHUNK = 100                    # problems per checkpoint
 OVERWRITE = False              # False: only missing arms. True: redo all. ["no_code"]: redo those conditions only.
-RUN_ID = "2026-10-16_verltool-1.5b"   # the stage-1 run; None would start a new folder named by today's date
+RUN_ID = None                  # None: today's date + preset. Set an existing id to resume or extend a run.
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}"
@@ -159,12 +148,12 @@ print("this run     :", RUN_ID, "(resuming)" if RUN_ID in existing else "(new)")
 print("datasets     :", ", ".join(f"{k} {p or 'all'} problems x {n} samples" for k, (p, n) in DATASETS.items()))
 print("arms         :", "; ".join(f"{t}: {', '.join(c)}" for t, c in CONDITIONS_BY_MODEL.items()))
 os.makedirs(OUT, exist_ok=True)
-CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, template=TEMPLATE, conditions_by_model=CONDITIONS_BY_MODEL,
+CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, templates=TEMPLATES, conditions_by_model=CONDITIONS_BY_MODEL,
               datasets=DATASETS, max_tokens=MAX_TOKENS, max_model_len=MAX_MODEL_LEN, temperature=TEMPERATURE,
               top_p=TOP_P, seed=SEED, max_calls=MAX_CALLS, chunk=CHUNK,
               created=datetime.datetime.now().isoformat(timespec="seconds"))
 cfg_path = f"{OUT}/config.json"
-KEYS = ("models", "template", "conditions_by_model", "datasets", "max_tokens", "max_model_len", "temperature",
+KEYS = ("models", "templates", "conditions_by_model", "datasets", "max_tokens", "max_model_len", "temperature",
         "top_p", "seed", "max_calls")
 old = json.load(open(cfg_path)) if os.path.exists(cfg_path) else None
 diff = [k for k in KEYS if old and json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
@@ -183,12 +172,15 @@ import json, os, signal, shutil, subprocess, sys, time
 from pathlib import Path
 
 
+import gen
+
+
 def arm_files(tag, dataset):
     # (condition, jsonl, meta, partial) for every arm this model runs on this dataset
     out = Path(OUT) / dataset
     rows = []
     for cond in CONDITIONS_BY_MODEL[tag]:
-        stem = out / f"{tag}__{cond}__{TEMPLATE}"
+        stem = out / f"{tag}__{cond}__{gen.template_for(cond, TEMPLATES[tag])}"
         rows.append((cond, stem.with_suffix(".jsonl"), stem.with_suffix(".meta.json"), Path(str(stem) + ".jsonl.partial")))
     return rows
 
@@ -279,7 +271,7 @@ def run_model(tag):
         print(f"[{tag}] arms are missing but this runtime has NO GPU; switch to a GPU runtime and run from cell 1")
     else:
         cmd = [sys.executable, "src/gen.py", "--model", MODELS[tag], "--tag", tag,
-               "--conditions", ",".join(CONDITIONS_BY_MODEL[tag]), "--template", TEMPLATE, "--dataset", DATASET_SPEC,
+               "--conditions", ",".join(CONDITIONS_BY_MODEL[tag]), "--template", TEMPLATES[tag], "--dataset", DATASET_SPEC,
                "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
                "--temperature", str(TEMPERATURE), "--top-p", str(TOP_P), "--seed", str(SEED),
                "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--chunk", str(CHUNK), "--out", OUT]
