@@ -196,8 +196,10 @@ def status(tag):
             if meta.exists():
                 m = json.load(open(meta))
                 note = f"done     n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
-                if m["n"] != n_samp or (n_prob and m["n_problems"] != n_prob):
-                    note += "   <- different problems/samples than DATASETS; set OVERWRITE or a new RUN_ID"
+                if m["n"] < n_samp or (n_prob and m["n_problems"] < n_prob):
+                    note += "   <- FEWER problems/samples than DATASETS asks; set OVERWRITE or a new RUN_ID"
+                elif m["n"] > n_samp or (n_prob and m["n_problems"] > n_prob):
+                    note += "   (more than DATASETS asks: fine, used as is)"
             elif partial.exists():
                 pids = set()
                 for line in open(partial):
