@@ -52,20 +52,19 @@ def test_config_cell():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = "), "config", "exec"), ns)
-        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime_all:0:64,olymmath_easy:0:64"
-        assert ns["RUN_ID"].endswith("_verltool-1.5b") and ns["RUN_ID"][:4].isdigit()
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "aime_all:0:16"
+        assert ns["RUN_ID"] == "2026-10-16_verltool-1.5b"
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
         assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "no_code"],
                                               "base": ["tool_on", "env_denied", "no_code"], "text_rl": ["no_code"]}
         assert cfg["template"] == "verltool_torl" and set(cfg["models"]) == {"tool_rl", "base", "text_rl"}
-        src = cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace(
-            "MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
+        src = cell("DATASET_SPEC = ").replace("MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
         with contextlib.redirect_stdout(buf):
             exec(compile(src, "config", "exec"), dict(RUNS=str(runs)))
         assert "(resuming)" in buf.getvalue() and "DIFFERS in ['max_tokens']" in buf.getvalue()
         with contextlib.redirect_stdout(buf):
-            exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True"), "config", "exec"),
-                 dict(RUNS=str(runs)))
+            exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True").replace(
+                'RUN_ID = "2026-10-16_verltool-1.5b"', "RUN_ID = None"), "config", "exec"), dict(RUNS=str(runs)))
         assert "_verltool-1.5b-smoke (new)" in buf.getvalue()
 
 

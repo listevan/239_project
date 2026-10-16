@@ -44,15 +44,20 @@ control:** tool_rl above base with the tool on. **Attribution:** RL without a to
 fall below base at large k on its own (Yue et al. 2504.13837), so text_rl `no_code`
 shows whether a deficit belongs to the tool.
 
-**Datasets**, 64 samples each: AIME 2022-2025 (120 problems) and OlymMATH-Easy (100
-AIME-level problems from printed sources, 2025). Hard enough that the tool matters,
-not so hard that a 1.5B model floors.
+**Datasets:** AIME 2022-2025 (120 problems) and OlymMATH-Easy (100 AIME-level
+problems from printed sources, 2025). Hard enough that the tool matters, not so
+hard that a 1.5B model floors.
 
-**Run:** cells 1 to 6 once per session, then the three model cells. Every arm
-checkpoints to Drive every `CHUNK` problems and finished arms are never redone, so
-after a disconnect re-run cells 1 to 6 and the model cell that was going. About
-3.5 to 4 h on an A100; each model does AIME first. `SMOKE = True` is a 10-minute
-wiring check.
+**Staged, with gates.** Stage 1 (done): tool_rl on both sets x 64; the tool matters
+(AIME pass@64 0.47 with it, 0.24 without). Stage 2 (this config): base and text_rl
+on AIME x 16, about 40 min, compared with tool_rl at pass@16. Stage 3 only if stage 2
+leaves the comparison too close to call. Run `run_model("base")`, then
+`run_model("text_rl")`; the tool_rl cell reports its arms done.
+
+**Run:** cells 1 to 6 once per session, then the model cells. Every arm checkpoints
+to Drive every `CHUNK` problems and finished arms are never redone, so after a
+disconnect re-run cells 1 to 6 and the model cell that was going. Keep `RUN_ID`
+pointing at the stage-1 run so the arms land together.
 
 **Then on the laptop:** `uv run src/report.py --run <run id>` grades, prints the
 tables and verdicts, and saves dated figures to the run folder.
@@ -128,7 +133,11 @@ CONDITIONS_BY_MODEL = {
     "text_rl": ["no_code"],
 }
 SMOKE = False                  # True: 6 AIME problems x 4 samples x 1024 tokens, a 10-minute wiring check
-DATASETS = {"aime_all": (6, 4)} if SMOKE else {"aime_all": (0, 64), "olymmath_easy": (0, 64)}   # (problems, samples)
+# Staged pilot, each stage gated on the previous one (README, "Pilot gates"):
+#   stage 1  tool_rl, AIME + OlymMATH x 64        done 2026-10-16: the tool matters (pass@64 0.47 on vs 0.24 off)
+#   stage 2  base and text_rl, AIME x 16          the main comparison at pass@16, about 40 min
+#   stage 3  scale samples / OlymMATH only if stage 2 is close and needs the power
+DATASETS = {"aime_all": (6, 4)} if SMOKE else {"aime_all": (0, 16)}   # (problems, samples); stage 3: {"aime_all": (0, 64), "olymmath_easy": (0, 64)}
 MAX_TOKENS = 1024 if SMOKE else 3000
 MAX_MODEL_LEN = 4096
 TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0
@@ -136,7 +145,7 @@ MAX_CALLS = 4
 GPU_MEM = 0.90
 CHUNK = 100                    # problems per checkpoint
 OVERWRITE = False              # False: only missing arms. True: redo all. ["no_code"]: redo those conditions only.
-RUN_ID = None                  # None: today's date + preset. Set an existing id to resume or extend a run.
+RUN_ID = "2026-10-16_verltool-1.5b"   # the stage-1 run; None would start a new folder named by today's date
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
