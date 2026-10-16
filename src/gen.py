@@ -10,8 +10,8 @@ training prompt) everywhere; only what happens to code differs:
               available; the code was not executed. ..." and generation continues.
   no_code     code cannot be written: a logit ban on every backtick token and on the
               program-only keywords (docs/no_code_ban.md). Nothing is intercepted or inserted.
-  plain       the best case for tool-free reasoning: the plain step-by-step prompt (qwen_math_cot,
-              which does not invite code) plus the same ban. Same prompt for every model.
+  plain       the best case for tool-free reasoning: the bare question (no template, base's best
+              prompt, which does not invite code) plus the same ban. Same prompt for every model.
 
 Rows are written with correct = null; src/grade.py grades them on any machine. Only main()
 imports vllm and torch, so everything else runs in the laptop tests.

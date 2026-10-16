@@ -32,7 +32,7 @@ COMPARE_TITLES = {
     "no_code": "no code possible: tool-RL vs base (main test), text-RL for attribution",
     "env_denied": "tool off, code not run: tool-RL vs base (main test)",
     "tool_on": "tool on: tool-RL vs base (positive control)",
-    "plain": "plain step-by-step prompt, code banned: best case tool-free",
+    "plain": "bare question, code banned: tool-RL vs base (main test)",
 }
 
 
