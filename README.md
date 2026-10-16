@@ -51,6 +51,14 @@ Each stage runs only if the one before passes; numbers are pass@k with strict bo
    therefore not a test of atrophy. Details and every audit finding: docs/audit_2026-10-16.md.
 3. Main comparison and scale-up: on hold until a tool checkpoint passes gate 2.
 
+## Contamination check (2026-10-16)
+
+ToRL's released training set (`data/torl_data/train.parquet`, 28,740 problems) searched by normalised text
+for every evaluation problem: AMC 2023 has 13 exact and about 9 reworded copies of its 40 problems, so it is
+not used; AMC 12 2024 (44 problems), AIME 2024 and AIME 2025 have none (their few substring hits are stock
+phrases such as "m and n are relatively prime"). The 2024 contests also postdate Qwen2.5-Math, so the pilot
+set is unseen by both models.
+
 ## Layout
 
 | path | what |
