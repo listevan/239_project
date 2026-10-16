@@ -201,13 +201,6 @@ def test_audit_fixes_in_helpers():
     assert gen.advance(s2, "plain ending", 2, "stop", None, "env_denied", 4) is None and s2.finish == "eos"
 
 
-def test_end_token_ids():
-    # special end-of-turn tokens must be stop ids: vLLM drops them from the text, so stop strings miss them
-    tok = SimpleNamespace(get_vocab=lambda: {"<|endoftext|>": 151643, "<|im_end|>": 151645, "<|im_start|>": 151644,
-                                             "hello": 7})
-    assert gen.end_token_ids(tok) == [151643, 151645]
-
-
 def test_settings_fingerprint_and_arm_done():
     import json, tempfile
     a = SimpleNamespace(model="m", template="verltool_torl", temperature=0.6, top_p=0.95, max_tokens=3000,

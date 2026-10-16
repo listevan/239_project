@@ -84,15 +84,6 @@ STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # the model opens the output block itself
 TOOL_STOPS = (STOP_FENCE, STOP_OUTPUT)
 TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
-# End-of-turn tokens are special tokens, which vLLM strips from the text before matching stop strings,
-# so the strings above never fire on them: they must also be stop token ids. Without this a base model
-# that ends its turn with <|im_end|> runs on (only <|endoftext|> is its eos) into junk until the cap.
-END_TOKENS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>", "</s>")
-
-
-def end_token_ids(tok):
-    vocab = tok.get_vocab()
-    return sorted({vocab[t] for t in END_TOKENS if t in vocab})
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
 
@@ -430,7 +421,7 @@ def settings_fp(args, n, template=None):
     """Short fingerprint of everything that shapes a sample; checkpoints only resume under the same one."""
     keys = dict(model=args.model, template=template or args.template, temperature=args.temperature, top_p=args.top_p,
                 max_tokens=args.max_tokens, max_model_len=args.max_model_len, max_calls=args.max_calls,
-                exec_timeout=args.exec_timeout, seed=args.seed, n=n, end_tokens=END_TOKENS)
+                exec_timeout=args.exec_timeout, seed=args.seed, n=n)
     return hashlib.sha1(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:10]
 
 
@@ -594,7 +585,6 @@ def main(argv=None):
     tok = llm.get_tokenizer()
     print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
     ban = {i: BAN_BIAS for i in code_token_ids(tok)}
-    end_ids = end_token_ids(tok)
     state = {"bias": None}   # the no_code ban while that arm runs, else None
 
     def tokenize_len(text):
@@ -602,7 +592,7 @@ def main(argv=None):
 
     def sp(n, max_tokens, stops, seed=None):
         kw = dict(n=n, temperature=args.temperature, top_p=args.top_p, seed=args.seed if seed is None else seed,
-                  max_tokens=max_tokens, stop=stops, stop_token_ids=end_ids, include_stop_str_in_output=True)
+                  max_tokens=max_tokens, stop=stops, include_stop_str_in_output=True)
         if state["bias"]:
             kw["logit_bias"] = state["bias"]
         return SamplingParams(**kw)
@@ -670,8 +660,7 @@ def main(argv=None):
             write_jsonl_atomic(path, recs)
             meta = dict(vars(args), dataset=ds, n=ns, n_problems_requested=np_, condition=cond, dtype=dtype,
                         fp=fp, commit=commit,
-                        n_banned=len(ban) if cond in BANNED else 0, end_token_ids=end_ids,
-                        template_used=template_for(cond, args.template),
+                        n_banned=len(ban) if cond in BANNED else 0, template_used=template_for(cond, args.template),
                         graded=False, pass1=None,
                         n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
                         gen_seconds=time.time() - t1, total_gen_tokens=sum(r["gen_tokens"] for r in recs),
