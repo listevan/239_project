@@ -17,13 +17,26 @@ import grade  # noqa: E402
 
 def row(pid, k, text, gold, tag="base", cond="no_code", graded=False):
     return dict(tag=tag, condition=cond, template="t", model="m", problem_id=pid, sample_idx=k, text=text, gold=gold,
-                correct=(True if graded else None), correct_boxed=None, arith_n=None, arith_wrong=None, truncated=False,
+                correct=(True if graded else None), correct_boxed=None, **({"correct_any": True} if graded else {}),
+                arith_n=None, arith_wrong=None, truncated=False,
                 boxed_present="\\boxed" in text, fake_outputs=0, n_calls=0, n_denied=0, n_exec_err=0, gen_tokens=10)
 
 
 def _slow_worker(text, gold):
     time.sleep(30)
     return True, 0, 0, 30.0, True
+
+
+def test_old_scheme_rows_are_regraded_and_string_fallback():
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "a.jsonl"
+        old = row("p0", 0, "answer 7, no box", "7")
+        old.update(correct=True, correct_boxed=False)            # graded before correct_any existed
+        gen.write_jsonl_atomic(path, [old])
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert grade.grade_dir(Path(d), workers=0)[0]["graded_now"] == 1
+        r = json.loads(open(path).readline())
+        assert r["correct"] is False and r["correct_any"] is True
 
 
 def test_grading_with_workers():
@@ -42,11 +55,11 @@ def test_grading_with_workers():
             rows = grade.grade_dir(folder, workers=2, timeout=60)
         assert rows[0]["graded_now"] == 4 and rows[0]["timeouts"] == 0
         out = [json.loads(line) for line in open(path)]
-        assert [r["correct"] for r in out] == [True, False, False, True, True]
-        assert [r["correct_boxed"] for r in out[:4]] == [True, False, False, False]
+        assert [r["correct"] for r in out] == [True, False, False, False, True]      # boxed answer only
+        assert [r["correct_any"] for r in out[:4]] == [True, False, False, True]    # whole text, for reference
         assert out[1]["arith_n"] == 1 and out[1]["arith_wrong"] == 1
         meta = json.load(open(gen.meta_path(path)))
-        assert meta["graded"] is True and meta["grader"] == "math_verify" and meta["pass1"] == 0.6
+        assert meta["graded"] is True and meta["grader"].startswith("math_verify") and meta["pass1"] == 0.4
         with contextlib.redirect_stdout(buf):
             assert grade.grade_dir(folder, workers=2)[0]["graded_now"] == 0
 

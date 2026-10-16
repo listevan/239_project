@@ -47,7 +47,8 @@ def test_tables_and_order():
     assert (pk["pass@8"] >= pk["pass@1"]).all()
     assert list(pk.condition)[:2] == ["tool_on", "tool_on"] and list(pk.tag)[:2] == ["base", "tool_rl"]
     s = an.summary(df)
-    assert len(s) == 7 and {"pass1_boxed", "called_pct", "arith_err_pct"} <= set(s.columns)
+    assert len(s) == 7 and {"pass1_any", "pass@8", "unfinished_pct", "early_stop_pct", "code_like_pct", "called_pct",
+                            "arith_err_pct"} <= set(s.columns)
     assert an.pass_at_k(4, 0, 2) == 0.0 and an.pass_at_k(4, 4, 2) == 1.0 and np.isnan(an.pass_at_k(2, 1, 4))
 
 
@@ -89,10 +90,10 @@ def test_verdict():
     out = buf.getvalue()
     first = [l for l in out.splitlines() if " - " in l and "pass@" in l][0]
     assert "tool_rl - base" in first
-    assert "erosion test (vs untrained base)" in out and "tool-specific test (vs text_rl)" in out
-    assert "positive control (both with the tool)" in out
+    assert "erosion test (tool_rl vs untrained base)" in out and "attribution (vs text_rl)" in out
+    assert "positive control" in out and "Holm-adjusted" in out
     env = out.split("[env_denied]")[1]
-    assert "text_rl" not in env.split("->")[0]          # no text_rl env_denied arm: base-only readout
+    assert "attribution" not in env                    # no text_rl env_denied arm: base-only readout
 
 
 def test_load_results_and_stamps():
@@ -130,6 +131,38 @@ def test_plot_caps_at_shared_k():
     assert max(max(l.get_xdata()) for l in ax.get_lines()) == 16 and list(ax.get_xticks()) == [1, 2, 4, 8, 16]
     fig = an.plot(df, ["tool_rl no_code"], ci=False, kmax=None)
     assert max(fig.axes[0].get_lines()[0].get_xdata()) == 64
+
+def _two_arm(p_tool, p_base, n_problems=60, n=16, cond="no_code", seed=0, p_text=None):
+    rng = np.random.default_rng(seed)
+    rows = []
+    arms = [("tool_rl", p_tool), ("base", p_base)] + ([("text_rl", p_text)] if p_text is not None else [])
+    for tag, pfn in arms:
+        for i in range(n_problems):
+            p = pfn(i)
+            for j in range(n):
+                rows.append(dict(tag=tag, condition=cond, problem_id=f"p{i}", sample_idx=j, correct=bool(rng.random() < p),
+                                 truncated=False, boxed_present=True, n_calls=0, n_denied=0, n_exec_err=0,
+                                 fake_outputs=0, arith_n=0, arith_wrong=0, gen_tokens=10))
+    df = pd.DataFrame(rows)
+    df["arm"] = df.tag + " / " + df.condition
+    return df
+
+
+def test_verdict_wording():
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        an.verdict(_two_arm(lambda i: 0.2, lambda i: 0.2, cond="tool_on"), "tool_on", iters=300)   # control fails
+        an.verdict(_two_arm(lambda i: 0.2, lambda i: 0.2), "no_code", iters=300)                   # equal
+        # sharpening: tool_rl sure on half the problems, never on the rest; base 30% everywhere
+        an.verdict(_two_arm(lambda i: 0.9 if i % 2 else 0.0, lambda i: 0.3), "no_code", iters=300)
+        # text_rl gained, tool_rl level with base
+        an.verdict(_two_arm(lambda i: 0.1, lambda i: 0.1, p_text=lambda i: 0.4), "no_code", iters=300)
+    out = buf.getvalue()
+    assert "positive control: FAILED" in out
+    assert "inconclusive: no difference detected" in out and "not evidence of no erosion" in out
+    assert "sharpening: tool_rl above base at pass@1 but below at pass@16" in out
+    assert "text_rl rose above base and tool_rl did not" in out and "tool-specific cost" not in out
+    assert an._holm([0.01, 0.04, float("nan")])[:2] == [0.02, 0.04] and an._describe(float("nan"), 0, 0, 0.01) == "no data"
 
 if __name__ == "__main__":
     fails = 0

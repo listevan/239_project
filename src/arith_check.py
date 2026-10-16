@@ -25,7 +25,8 @@ _NORM = [
     (r'\\(?:quad|qquad|implies|Rightarrow|Longrightarrow|iff|therefore|hline|nonumber)\b'
      r'|\\text\{[^{}]*\}|\\begin\{[a-z*]+\}|\\end\{[a-z*]+\}|\\\\', ' ; '),
     (r'&', ''),                                     # align column marker: sits next to the '=', just drop it
-    (r'\\times|\\cdot|×|·|\*\*?', '*'),
+    (r'\\[cl]?dots\b|\\cdots|\\ldots|…', ' ; '),     # an ellipsis ends a run: 1\\cdot 2\\cdots n is not one product
+    (r'\\times|\\cdot(?![a-z])|×|·|\*\*?', '*'),
     (r'\\div|÷', '/'),
     (r'\\left\(|\\right\)', lambda m: '(' if 'left' in m.group(0) else ')'),
     (r'\\d?frac\{([^{}]+)\}\{([^{}]+)\}', r'((\1)/(\2))'),
@@ -34,7 +35,7 @@ _NORM = [
     (r'\\%|%', ''),
     (r'\$', ' '),
     (r'−|–', '-'),
-    (r'\\approx|≈', '='),
+    (r'\\approx|≈', ' ; '),     # an approximation is not an exact claim: do not check it
     (r'(?<=\d),(?=\d{3}\b)', ''),      # thousands separators: 1,234 -> 1234
     (r'\.(?!\d)', ' ; '),             # a period not followed by a digit ends a sentence, not a number
     (r',', ' ; '),                    # any remaining comma is a list separator
@@ -134,8 +135,8 @@ def check(text, rel_tol=1e-6):
         start = m.start() + (len(run) - len(run.lstrip()))
         end = m.end() - (len(run) - len(run.rstrip()))
         segs = run.split('=')
-        if _glued_before(text[:start]):
-            segs[0] = ''
+        if _glued_before(text[:start]) or (segs[0].lstrip()[:1] in '+-*/^' and re.search(r'[\w)\]}]\s*$', text[:start])):
+            segs[0] = ''   # glued to a variable, or an operator continuing an expression that started before the run
         if _glued_after(text[end:]):
             segs[-1] = ''
         vals = []

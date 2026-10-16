@@ -175,6 +175,42 @@ def test_checkpoint_helpers():
         assert json.loads(open(path).readline())["problem_id"] in ("p0", "p1")
 
 
+def test_audit_fixes_in_helpers():
+    assert gen.last_boxed(r"so \boxed{116} then \boxed{11") == "116"           # cut-off final box: earlier one counts
+    out, err = gen.execute("import sys; sys.stdout.buffer.write(b'ok \\xff'); sys.stdout.flush()")
+    assert out.startswith("ok") and not err                                   # non-UTF-8 output no longer crashes
+    seeds = {gen.round_seed(0, p, k, r) for p in range(30) for k in range(128) for r in range(1, 4)}
+    assert len(seeds) == 30 * 128 * 3                                         # no collisions, even for n > 64
+    # a python block closed and then end-of-sequence is a call like any other
+    s = gen.Sample(0, 0, "P")
+    inj = gen.advance(s, "Check:\n```python\nprint(3)\n```", 6, "stop", None, "env_denied", 4)
+    assert inj is not None and gen.DENIAL in inj and s.n_eos_code == 1 and s.n_denied == 1 and not s.done
+    s2 = gen.Sample(0, 0, "P")
+    assert gen.advance(s2, "plain ending", 2, "stop", None, "env_denied", 4) is None and s2.finish == "eos"
+
+
+def test_settings_fingerprint_and_arm_done():
+    import json, tempfile
+    a = SimpleNamespace(model="m", template="verltool_torl", temperature=0.6, top_p=0.95, max_tokens=3000,
+                        max_model_len=4096, max_calls=4, exec_timeout=10.0, seed=0)
+    fp = gen.settings_fp(a, 16)
+    assert fp == gen.settings_fp(a, 16) and fp != gen.settings_fp(a, 64)
+    assert fp != gen.settings_fp(SimpleNamespace(**{**vars(a), "temperature": 1.0}), 16)
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "x.jsonl"
+        gen.write_jsonl(gen.partial_path(path), [dict(problem_id="p0", sample_idx=k, fp="OTHER") for k in range(2)]
+                        + [dict(problem_id="p1", sample_idx=k, fp=fp) for k in range(2)])
+        kept, done = gen.read_partial(path, 2, fp)
+        assert done == {"p1"}                                                  # rows from other settings dropped
+        meta = gen.meta_path(path)
+        meta.write_text(json.dumps(dict(n=4, n_problems=6, n_problems_requested=6)))
+        assert not gen.arm_done(meta, 16, 0) and not gen.arm_done(meta, 4, 0)   # smoke-sized arm is not done
+        meta.write_text(json.dumps(dict(n=64, n_problems=120, n_problems_requested=0)))
+        assert gen.arm_done(meta, 16, 0) and gen.arm_done(meta, 64, 0) and not gen.arm_done(meta, 128, 0)
+        path.write_text("{}\n")
+        gen.retire(path)
+        assert not path.exists() and not meta.exists() and Path(str(path) + ".replaced").exists()
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

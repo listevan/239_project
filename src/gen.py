@@ -18,6 +18,7 @@ imports vllm and torch, so everything else runs in the laptop tests.
       --dataset aime_all::64,olymmath_easy::64 --out <runs root>/<run id>
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -100,22 +101,24 @@ def last_code_block(text: str):
 
 
 def last_boxed(text: str):
-    """Content of the last \\boxed{...} with balanced braces, or None."""
-    i = text.rfind("\\boxed")
-    if i < 0:
-        return None
-    j = text.find("{", i)
-    if j < 0:
-        return None
-    depth = 0
-    for k in range(j, len(text)):
-        if text[k] == "{":
-            depth += 1
-        elif text[k] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[j + 1:k]
-    return None
+    """Content of the last complete \\boxed{...} (balanced braces), or None. A final box cut off by the
+    token cap does not hide an earlier complete one."""
+    end = len(text)
+    while True:
+        i = text.rfind("\\boxed", 0, end)
+        if i < 0:
+            return None
+        j = text.find("{", i)
+        if 0 <= j:
+            depth = 0
+            for k in range(j, len(text)):
+                if text[k] == "{":
+                    depth += 1
+                elif text[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[j + 1:k]
+        end = i
 
 
 def strip_fenced(text: str) -> str:
@@ -176,14 +179,27 @@ def load_problems(name: str, n_problems: int, seed: int):
 
 
 # --------------------------------------------------------------------------- executor
+EXEC_MEMORY_BYTES = 4 * 1024 ** 3   # per snippet; the VM also hosts vLLM
+
+
+def _limit_memory():
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (EXEC_MEMORY_BYTES, EXEC_MEMORY_BYTES))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
 def execute(code: str, timeout: float = 10.0, max_chars: int = MAX_OUTPUT_CHARS):
-    """Run `code` with python -I in a temp dir. Returns (output_text, errored)."""
+    """Run `code` with python -I in a temp dir (memory capped on Linux). Returns (output_text, errored).
+    Output is decoded with errors="replace", so a stray non-UTF-8 byte cannot crash the run."""
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "snippet.py"
         path.write_text(code)
         try:
             r = subprocess.run([sys.executable, "-I", str(path)], cwd=d, capture_output=True,
-                               stdin=subprocess.DEVNULL, text=True, timeout=timeout)
+                               stdin=subprocess.DEVNULL, text=True, errors="replace", timeout=timeout,
+                               preexec_fn=_limit_memory if sys.platform.startswith("linux") else None)
             out, err = r.stdout, r.returncode != 0
             if err:
                 tail = r.stderr.strip().splitlines()
@@ -199,13 +215,13 @@ def execute(code: str, timeout: float = 10.0, max_chars: int = MAX_OUTPUT_CHARS)
 # --------------------------------------------------------------------------- tool loop
 class Sample:
     __slots__ = ("pidx", "sidx", "prompt", "gen", "gen_tokens", "n_calls", "n_denied",
-                 "n_exec_err", "n_injected", "rounds", "done", "truncated", "finish")
+                 "n_exec_err", "n_injected", "rounds", "done", "truncated", "finish", "n_eos_code")
 
     def __init__(self, pidx, sidx, prompt):
         self.pidx, self.sidx, self.prompt = pidx, sidx, prompt
         self.gen = ""
         self.gen_tokens = 0
-        self.n_calls = self.n_denied = self.n_exec_err = self.n_injected = self.rounds = 0
+        self.n_calls = self.n_denied = self.n_exec_err = self.n_injected = self.rounds = self.n_eos_code = 0
         self.done = self.truncated = False
         self.finish = None
 
@@ -224,8 +240,16 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
         s.done, s.truncated, s.finish = True, True, "length"
         return None
     if stop_reason not in TOOL_STOPS:
-        s.done, s.finish = True, "eos"
-        return None
+        # A python block closed with ``` and then end-of-sequence never reaches the fence stop (no
+        # newline after it). Treat it as a call like any other, so a model that ends this way (base does
+        # in about 5% of tool-condition samples) is not silently left without its result.
+        tail = text.rstrip()
+        blocks = list(CODE_RE.finditer(tail))
+        if not (blocks and blocks[-1].end() == len(tail)):
+            s.done, s.finish = True, "eos"
+            return None
+        s.n_eos_code += 1
+        stop_reason = None
     code = last_code_block(text)
     if code is None:
         return None  # a non-python fence or a model-written ```output: keep generating
@@ -236,7 +260,10 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
     else:
         result = DENIAL_BUDGET if cond == "tool_on" else DENIAL
         s.n_denied += 1
-    inj = ("\n" + result + "\n```\n") if stop_reason == STOP_OUTPUT else ("```output\n" + result + "\n```\n")
+    if stop_reason == STOP_OUTPUT:
+        inj = "\n" + result + "\n```\n"
+    else:
+        inj = ("" if s.gen.endswith("\n") else "\n") + "```output\n" + result + "\n```\n"
     s.gen += inj
     s.n_injected += 1
     return inj
@@ -264,6 +291,11 @@ def splice_round(pending, cond, args, pool):
         print(f"  executed in {time.time() - t0:.0f}s, {n_err} errored or timed out", flush=True)
 
 
+def round_seed(seed, pidx, sidx, rnd):
+    """Seed for one sample's later round: a hash, so no two (problem, sample, round) collide."""
+    return int.from_bytes(hashlib.blake2b(f"{seed}/{pidx}/{sidx}/{rnd}".encode(), digest_size=4).digest(), "big") % (2 ** 31)
+
+
 def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
     """Rounds 2..N for samples that stopped at a code block.
     generate(prompts, stops, budgets, seeds) -> [(text, n_tokens, finish_reason, stop_reason)]."""
@@ -288,25 +320,26 @@ def run_tool_loop(generate, tokenize_len, samples, cond, args, pool):
         print(f"  round {rnd}: {len(keep)} of {len(samples)} samples still generating"
               f"{' (final round, no more tool stops)' if final else ''}, {time.time() - t0:.0f}s into the loop",
               flush=True)
-        seeds = [(args.seed * 1_000_003 + s.pidx * 4096 + s.sidx * 64 + s.rounds) % (2 ** 31) for s in keep]
+        seeds = [round_seed(args.seed, s.pidx, s.sidx, s.rounds) for s in keep]
         outs = generate([s.context for s in keep], stops, budgets, seeds)
         splice_round([(s,) + tuple(o) for s, o in zip(keep, outs)], cond, args, pool)
 
 
 # --------------------------------------------------------------------------- records
-def to_record(s: Sample, item, cond, template, model, tag, dataset):
+def to_record(s: Sample, item, cond, template, model, tag, dataset, fp=None):
     """One ungraded JSONL row; correct / correct_boxed / arith_* are filled by src/grade.py."""
     text = s.gen
     boxed = last_boxed(text)
     return dict(
         model=model, tag=tag, condition=cond, template=template, dataset=dataset,
         problem_id=item["id"], subject=item.get("subject"), level=item.get("level"), sample_idx=s.sidx,
-        correct=None, correct_boxed=None, gold=item["answer"], boxed=boxed, boxed_present=boxed is not None,
+        correct=None, correct_boxed=None, correct_any=None, gold=item["answer"], boxed=boxed,
+        boxed_present=boxed is not None,
         truncated=s.truncated, finish=s.finish, gen_tokens=s.gen_tokens, rounds=s.rounds,
         code_emitted="```python" in text or "```py" in text,
         fake_outputs=max(0, text.count(STOP_OUTPUT) - s.n_injected),
-        n_calls=s.n_calls, n_denied=s.n_denied, n_exec_err=s.n_exec_err,
-        arith_n=None, arith_wrong=None, text=text,
+        n_calls=s.n_calls, n_denied=s.n_denied, n_exec_err=s.n_exec_err, n_eos_code=s.n_eos_code,
+        arith_n=None, arith_wrong=None, fp=fp, text=text,
     )
 
 
@@ -322,9 +355,48 @@ def meta_path(path: Path) -> Path:
     return path.with_suffix(".meta.json")
 
 
-def read_partial(path: Path, n: int):
+def settings_fp(args, n):
+    """Short fingerprint of everything that shapes a sample; checkpoints only resume under the same one."""
+    keys = dict(model=args.model, template=args.template, temperature=args.temperature, top_p=args.top_p,
+                max_tokens=args.max_tokens, max_model_len=args.max_model_len, max_calls=args.max_calls,
+                exec_timeout=args.exec_timeout, seed=args.seed, n=n)
+    return hashlib.sha1(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:10]
+
+
+def git_commit():
+    try:
+        r = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def arm_done(meta_file: Path, n: int, n_problems: int):
+    """A finished arm counts as done if it has at least the samples and problems asked for (more is
+    fine). An arm with fewer, e.g. from a smoke run, is redone."""
+    if not meta_file.exists():
+        return False
+    m = json.loads(meta_file.read_text())
+    if m.get("n", 0) < n:
+        return False
+    if n_problems == 0:
+        return m.get("n_problems_requested", 0) == 0
+    return m.get("n_problems", 0) >= n_problems
+
+
+def retire(path: Path):
+    """Move a finished arm aside (<arm>.jsonl.replaced, <arm>.meta.json.replaced) before it is redone."""
+    for f in (path, meta_path(path)):
+        if f.exists():
+            os.replace(f, Path(str(f) + ".replaced"))
+    partial_path(path).unlink(missing_ok=True)
+
+
+def read_partial(path: Path, n: int, fp=None):
     """Records already checkpointed for this arm, keeping only problems with all n samples (last write
-    wins), so a torn chunk is simply redone. Returns (records, finished problem ids)."""
+    wins) and, if fp is given, only rows written under the same settings, so a torn chunk is redone and
+    a resume can never mix models, temperatures or budgets. Returns (records, finished problem ids)."""
     pp = partial_path(path)
     if not pp.exists():
         return [], set()
@@ -338,6 +410,8 @@ def read_partial(path: Path, n: int):
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue  # torn last line from a crash mid-write
+            if fp is not None and r.get("fp") != fp:
+                continue  # written under other settings
             by_pid.setdefault(r["problem_id"], {})[r["sample_idx"]] = r
     done = {pid for pid, d in by_pid.items() if len(d) == n}
     return [by_pid[pid][k] for pid in done for k in sorted(by_pid[pid])], done
@@ -423,8 +497,10 @@ def main(argv=None):
     def force(cond):
         return args.overwrite or cond in redo
 
-    plan = {ds: [c for c in conds if force(c) or not meta_path(out_path(ds, c)).exists()] for ds, _, _ in specs}
+    plan = {ds: [c for c in conds if force(c) or not arm_done(meta_path(out_path(ds, c)), ns, np_)]
+            for ds, np_, ns in specs}
     plan = {ds: cs for ds, cs in plan.items() if cs}
+    commit = git_commit()
     if not plan:
         print("all conditions already done, nothing to do (use --overwrite to redo)")
         return
@@ -495,9 +571,13 @@ def main(argv=None):
             if cond == "no_code":
                 print(f"   no_code: {len(ban)} backtick + program-keyword tokens banned"
                       + ("" if ban else "  WARNING: the tokenizer exposes no vocab, nothing is banned"), flush=True)
-            if force(cond):
-                partial_path(path).unlink(missing_ok=True)
-            kept, _ = read_partial(path, ns)
+            fp = settings_fp(args, ns)
+            if meta_path(path).exists():
+                # redo: forced, or the finished arm has fewer samples/problems than asked; set the old one
+                # aside first, so a crash during the redo resumes the redo instead of keeping the old arm
+                print(f"   retiring the finished {path.name} (kept as .replaced) before redoing it", flush=True)
+                retire(path)
+            kept, _ = read_partial(path, ns, fp)
             kept = [r for r in kept if r["problem_id"] in order]
             done_ids = {r["problem_id"] for r in kept}
             chunks = plan_chunks(items, done_ids, args.chunk)
@@ -507,7 +587,7 @@ def main(argv=None):
             new_recs = []
             for ci, part in enumerate(chunks, 1):
                 tc = time.time()
-                recs = [to_record(s, items[s.pidx], cond, args.template, args.model, args.tag, ds)
+                recs = [to_record(s, items[s.pidx], cond, args.template, args.model, args.tag, ds, fp)
                         for s in run_part(part, cond, ns)]
                 print(f"   writing {len(recs)} records to {partial_path(path).name}...", flush=True)
                 write_jsonl(partial_path(path), recs)
@@ -517,6 +597,7 @@ def main(argv=None):
             recs = sorted(kept + new_recs, key=lambda r: (order[r["problem_id"]], r["sample_idx"]))
             write_jsonl_atomic(path, recs)
             meta = dict(vars(args), dataset=ds, n=ns, n_problems_requested=np_, condition=cond, dtype=dtype,
+                        fp=fp, commit=commit,
                         n_banned=len(ban) if cond == "no_code" else 0, graded=False, pass1=None,
                         n_problems=len(items), n_records=len(recs), n_resumed=len(done_ids),
                         gen_seconds=time.time() - t1, total_gen_tokens=sum(r["gen_tokens"] for r in recs),

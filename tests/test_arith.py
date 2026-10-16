@@ -37,7 +37,9 @@ def test_symbols_do_not_count():
 
 def test_rounding_tolerance():
     assert nw("Rounded: 22/7 = 3.14 is fine; 1/3 = 0.333.") == (2, 0)
-    assert nw("22/7 \\approx 3.14") == (1, 0)
+    assert nw("22/7 \\approx 3.14") == (0, 0)          # approximations are not exact claims: not checked
+    assert nw(r"\(1\cdot 2\cdots 9 = 362880\)") == (0, 0)  # an ellipsis is not one product
+    assert nw(r"a_n - 2019\cdot1010 = 2019") == (0, 0)       # the expression started before the run
     assert nw("1/3 = 0.3") == (1, 0)
     assert nw("1/3 = 0.4") == (1, 1)
 

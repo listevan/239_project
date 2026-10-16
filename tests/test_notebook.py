@@ -61,11 +61,13 @@ def test_config_cell():
         src = cell("DATASET_SPEC = ").replace("MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
         with contextlib.redirect_stdout(buf):
             exec(compile(src, "config", "exec"), dict(RUNS=str(runs)))
-        assert "(resuming)" in buf.getvalue() and "DIFFERS in ['max_tokens']" in buf.getvalue()
+        assert "(resuming)" in buf.getvalue() and "changed ['max_tokens']" in buf.getvalue()
+        cfg2 = json.load(open(Path(ns["OUT"]) / "config.json"))
+        assert cfg2["max_tokens"] == 999 and cfg2["history"][-1]["max_tokens"] == 3000   # current settings + history
         with contextlib.redirect_stdout(buf):
-            exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True").replace(
-                'RUN_ID = "2026-10-16_verltool-1.5b"', "RUN_ID = None"), "config", "exec"), dict(RUNS=str(runs)))
-        assert "_verltool-1.5b-smoke (new)" in buf.getvalue()
+            exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True"), "config", "exec"),
+                 dict(RUNS=str(runs)))
+        assert "2026-10-16_verltool-1.5b-smoke (new)" in buf.getvalue()   # smoke never writes into the real run
 
 
 def test_arm_files_status_and_show():

@@ -3,11 +3,16 @@
 
     python src/grade.py <run>/<dataset> [--workers N] [--timeout S] [--regrade]
 
-gen.py writes rows with correct / correct_boxed / arith_n / arith_wrong null. This fills them and
-updates each .meta.json (graded, grader, pass1). Rows already graded are left alone unless --regrade.
+gen.py writes rows with correct / correct_any / arith_n / arith_wrong null. This fills them and
+updates each .meta.json (graded, grader, pass1). Rows already graded under this scheme are left alone
+unless --regrade; rows graded under the old scheme (no correct_any) are regraded automatically.
 
-  correct        math-verify on the whole response (it also credits an unboxed final answer)
-  correct_boxed  math-verify on the last \\boxed{...} only (strict)
+  correct        math-verify on the last complete \\boxed{...} only. The headline score: the prompt asks
+                 for a boxed answer, and the 2026-10-16 audit found whole-text grading crediting stray
+                 numbers ("step 3.", a 60-degree angle from the problem) in up to 41% of a tool-off arm's
+                 correct rows on OlymMATH.
+  correct_any    math-verify on the whole response (also credits an unboxed answer), for reference
+  correct_boxed  same as correct (kept for older readers)
   arith_*        steps checked / wrong by src/arith_check.py in the prose, code blocks excluded
 
 Grading runs in spawned worker processes: math-verify's own 5 s alarm catches most slow cases, and a
@@ -41,7 +46,8 @@ def make_grader():
         return grade, "math_verify"
     except ImportError:
         def norm(s):
-            return re.sub(r"\s+|\\left|\\right|\\!|\\,|\$", "", s or "").replace("dfrac", "frac")
+            s = re.sub(r"\s+|\\left|\\right|\\!|\\,|\$", "", s or "").replace("dfrac", "frac")
+            return (s.lstrip("0") or "0") if s.isdigit() else s   # AIME golds like "033"
 
         def grade(response: str, gold: str) -> bool:
             b = gen.last_boxed(response)
@@ -59,30 +65,35 @@ _GRADER = None
 
 
 def _grade_one(text, gold):
-    """Worker: (correct, arith_n, arith_wrong, seconds, correct_boxed). Builds the grader once per process."""
+    """Worker: (correct_boxed, arith_n, arith_wrong, seconds, correct_any). Builds the grader once per process."""
     global _GRADER
     if _GRADER is None:
         _GRADER = make_grader()
     grade, _ = _GRADER
     t = time.time()
-    correct = bool(grade(text, gold))
     correct_boxed = grade_boxed(grade, text, gold)
+    correct_any = bool(grade(text, gold))
     a_n, a_wrong, _ = arith_check.check(gen.strip_fenced(text))
-    return correct, a_n, a_wrong, time.time() - t, correct_boxed
+    return correct_boxed, a_n, a_wrong, time.time() - t, correct_any
 
 
 def _apply(r, result):
-    correct, a_n, a_wrong, secs = result[:4]
-    r["correct"], r["arith_n"], r["arith_wrong"] = correct, a_n, a_wrong
-    r["correct_boxed"] = result[4] if len(result) > 4 else None
+    boxed, a_n, a_wrong, secs = result[:4]
+    r["correct"] = r["correct_boxed"] = boxed
+    r["correct_any"] = result[4] if len(result) > 4 else None
+    r["arith_n"], r["arith_wrong"] = a_n, a_wrong
     r.pop("grade_timeout", None)
     return secs
+
+
+def needs_grading(r, regrade=False):
+    return regrade or r.get("correct") is None or "correct_any" not in r
 
 
 def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one, log=print):
     """Fill the grading fields of `recs` in place; workers=0 grades serially in this process.
     Returns dict(n_graded, n_timeout, seconds, slowest=[(seconds, problem_id, sample_idx), ...])."""
-    todo = [r for r in recs if regrade or r.get("correct") is None]
+    todo = [r for r in recs if needs_grading(r, regrade)]
     t0, n_timeout, slow = time.time(), 0, []
     step = max(10, len(todo) // 10)
 
@@ -106,7 +117,8 @@ def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one,
                 try:
                     note(r, _apply(r, f.get(timeout=timeout)))
                 except mp.TimeoutError:
-                    r.update(correct=False, correct_boxed=False, arith_n=None, arith_wrong=None, grade_timeout=True)
+                    r.update(correct=False, correct_boxed=False, correct_any=False, arith_n=None, arith_wrong=None,
+                             grade_timeout=True)
                     n_timeout += 1
                     log(f"   TIMEOUT after {timeout:.0f}s: problem {r['problem_id']} sample {r['sample_idx']} marked incorrect")
                 if i % step == 0:
@@ -132,7 +144,7 @@ def grade_dir(results_dir, workers, timeout=60.0, regrade=False, log=print):
     rows = []
     for path in paths:
         recs = [json.loads(line) for line in open(path) if line.strip()]
-        n_todo = sum(1 for r in recs if regrade or r.get("correct") is None)
+        n_todo = sum(1 for r in recs if needs_grading(r, regrade))
         if not n_todo:
             log(f"{path.name}: {len(recs)} rows already graded, skipped (use --regrade to redo)")
             rows.append(dict(file=path.name, rows=len(recs), graded_now=0, pass1=_pass1(recs)))
@@ -143,7 +155,7 @@ def grade_dir(results_dir, workers, timeout=60.0, regrade=False, log=print):
         acc = _pass1(recs)
         mpath = gen.meta_path(path)
         meta = json.loads(mpath.read_text()) if mpath.exists() else {}
-        meta.update(graded=True, grader=grader_name, pass1=acc, grade_seconds=stats["seconds"],
+        meta.update(graded=True, grader=f"{grader_name}, boxed answer only", pass1=acc, grade_seconds=stats["seconds"],
                     grade_timeouts=stats["n_timeout"], grade_workers=workers)
         mpath.write_text(json.dumps(meta, indent=1))
         log(f"   pass@1={acc:.3f}  {stats['seconds']:.0f}s  timeouts={stats['n_timeout']}  slowest: "

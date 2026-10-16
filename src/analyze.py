@@ -11,6 +11,7 @@ Works on any condition names, so runs made with older conditions still load and 
 """
 import json
 import math
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +30,9 @@ COND_COLOR = {"tool_on": "#eda100", "env_denied": "#e34948", "no_code": "#008300
 COND_STYLE = {"tool_on": ":", "env_denied": "--", "no_code": "-"}
 COND_MARK = {"tool_on": "^", "env_denied": "s", "no_code": "D"}
 GRAY = "#52514e"
+# unfenced code in a response (no_code leaks it: the ban stops fences, not every way of spelling code)
+CODE_LIKE = re.compile(r"^\s*(python\s*$|import |from \S+ import|def \w+\(|print\(|for \w+ in range\()|\\text\{import",
+                       re.M | re.I)
 
 
 def cond_rank(cond):
@@ -111,47 +115,58 @@ def bootstrap_passk(df: pd.DataFrame, tag: str, cond: str, k: int, iters: int = 
     return float(vals.mean()), float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
 
 
-def paired_diff(df: pd.DataFrame, a: tuple, b: tuple, k: int, iters: int = 1000, seed: int = 0):
-    """Bootstrap CI of pass@k(a) - pass@k(b), paired by problem. a, b = (tag, condition)."""
+def paired_diff(df: pd.DataFrame, a: tuple, b: tuple, k: int, iters: int = 2000, seed: int = 0, full=False):
+    """Bootstrap CI of pass@k(a) - pass@k(b), paired by problem; a, b = (tag, condition); each arm uses
+    its own sample count. Returns (mean, lo, hi), or with full=True (mean, lo, hi, p, n_problems) where p is
+    a two-sided bootstrap p-value. Problems missing from either arm are dropped (n_problems says how many
+    were paired)."""
     pp = per_problem(df)
     A = pp[(pp.tag == a[0]) & (pp.condition == a[1])].set_index("problem_id")
     B = pp[(pp.tag == b[0]) & (pp.condition == b[1])].set_index("problem_id")
     ids = A.index.intersection(B.index)
     if len(ids) == 0:
-        return (float("nan"),) * 3
+        return (float("nan"),) * (5 if full else 3)
     da = np.array([pass_at_k(int(A.loc[i, "n"]), int(A.loc[i, "c"]), k) for i in ids])
     db = np.array([pass_at_k(int(B.loc[i, "n"]), int(B.loc[i, "c"]), k) for i in ids])
     d = da - db
     rng = np.random.default_rng(seed)
     boots = rng.choice(d, size=(iters, len(d)), replace=True).mean(axis=1)
-    return float(d.mean()), float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
+    m, lo, hi = float(d.mean()), float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
+    if not full:
+        return m, lo, hi
+    p = min(1.0, 2 * min((boots <= 0).mean(), (boots >= 0).mean()))
+    return m, lo, hi, float(p), len(ids)
 
 
 def summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Headline table, one row per (model, condition): accuracy, pass@kmax, failure modes, tool use,
-    arithmetic error rate."""
+    """Headline table, one row per (model, condition). pass@1 and pass@k at the k every arm supports
+    (shared_kmax), failure modes, tool use, arithmetic error rate.
+      unfinished_pct   no boxed answer at the end (truncated at the cap, or stopped early)
+      early_stop_pct   stopped before the cap without an answer (the VerlTool tool checkpoint does this)
+      code_like_pct    response contains unfenced code (the no_code ban blocks fences, not all code)"""
     pk = passk_table(df)
+    ks = shared_kmax(df)
     rows = []
     for (tag, cond), g in df.groupby(["tag", "condition"]):
-        n = int(g.groupby("problem_id").size().min())
-        kmax = ks_for(n)[-1]
         pkrow = pk[(pk.tag == tag) & (pk.condition == cond)].iloc[0]
         arith_n = int(g["arith_n"].fillna(0).sum())
-        rows.append(dict(
-            tag=tag, condition=cond, problems=g["problem_id"].nunique(), samples=n,
-            **{"pass@1": round(pkrow["pass@1"], 3), f"pass@{kmax}": round(pkrow[f"pass@{kmax}"], 3)},
-            pass1_boxed=(round(float(g["correct_boxed"].astype(float).mean()), 3)
-                         if "correct_boxed" in g and g["correct_boxed"].notna().all() else float("nan")),
-            trunc_pct=round(100 * g["truncated"].mean(), 1),
-            no_boxed_pct=round(100 * (~g["boxed_present"].astype(bool)).mean(), 1),
-            called_pct=round(100 * (g["n_calls"] > 0).mean(), 1),
-            calls_mean=round(g["n_calls"].mean(), 2), denied_mean=round(g["n_denied"].mean(), 2),
-            exec_err_mean=round(g["n_exec_err"].mean(), 2),
-            fake_out_pct=round(100 * (g["fake_outputs"] > 0).mean(), 1),
-            arith_err_pct=round(100 * g["arith_wrong"].fillna(0).sum() / arith_n, 2) if arith_n else float("nan"),
-            arith_checked=arith_n, arith_coverage_pct=round(100 * (g["arith_n"].fillna(0) > 0).mean(), 1),
-            tokens_mean=round(g["gen_tokens"].mean()),
-        ))
+        boxed = g["boxed_present"].astype(bool)
+        rows.append({
+            "tag": tag, "condition": cond, "problems": g["problem_id"].nunique(),
+            "samples": int(g.groupby("problem_id").size().min()),
+            "pass@1": round(pkrow["pass@1"], 3), f"pass@{ks}": round(pkrow[f"pass@{ks}"], 3),
+            "pass1_any": (round(float(g["correct_any"].astype(float).mean()), 3)
+                          if "correct_any" in g and g["correct_any"].notna().all() else float("nan")),
+            "unfinished_pct": round(100 * (~boxed).mean(), 1),
+            "trunc_pct": round(100 * g["truncated"].mean(), 1),
+            "early_stop_pct": round(100 * (~boxed & ~g["truncated"].astype(bool)).mean(), 1),
+            "code_like_pct": round(100 * g["text"].map(lambda t: bool(CODE_LIKE.search(t or ""))).mean(), 1)
+                             if "text" in g else float("nan"),
+            "called_pct": round(100 * (g["n_calls"] > 0).mean(), 1),
+            "denied_mean": round(g["n_denied"].mean(), 2), "exec_err_mean": round(g["n_exec_err"].mean(), 2),
+            "arith_err_pct": round(100 * g["arith_wrong"].fillna(0).sum() / arith_n, 2) if arith_n else float("nan"),
+            "arith_checked": arith_n, "tokens_mean": round(g["gen_tokens"].mean()),
+        })
     out = pd.DataFrame(rows)
     out["_c"], out["_r"] = out.condition.map(cond_rank), out.tag.map(role_rank)
     return out.sort_values(["_c", "condition", "_r"]).drop(columns=["_c", "_r"]).reset_index(drop=True)
@@ -175,7 +190,7 @@ def calls_table(df: pd.DataFrame) -> pd.DataFrame:
     for (tag, cond), g in df.groupby(["tag", "condition"]):
         callers = g[g["n_calls"] > 0]
         denied = g[g["n_denied"] > 0]
-        row = dict(tag=tag, condition=cond, samples=len(g),
+        row = dict(tag=tag, condition=cond, rows=len(g),
                    called_pct=round(100 * (g["n_calls"] > 0).mean(), 1),
                    calls_total=int(g["n_calls"].sum()),
                    calls_per_caller=round(float(callers["n_calls"].mean()), 2) if len(callers) else float("nan"),
@@ -310,7 +325,7 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
         if name:
             ax.set_title(name, loc="left")
         if ax.get_lines():
-            ax.legend(frameon=False, fontsize=8, loc="lower right")
+            ax.legend(frameon=False, fontsize=8, loc="upper left")
     axes[0][0].set_ylabel("pass@k")
     if title:
         if n == 1:
@@ -329,49 +344,96 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
     return fig
 
 
-def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):
-    """Readout for one condition (same prompt and harness for all three models), base first.
+def _holm(ps):
+    """Holm step-down adjusted p-values for a list of p-values (NaN stays NaN)."""
+    idx = [i for i, p in enumerate(ps) if p == p]
+    order = sorted(idx, key=lambda i: ps[i])
+    adj, running = [float("nan")] * len(ps), 0.0
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (len(order) - rank) * ps[i]))
+        adj[i] = running
+    return adj
 
-    Primary, erosion: is tool_rl below its own untrained base? That comparison has no recipe
-    confound, so it is the clean test of "lost what it had". Secondary, tool-specific: is
-    tool_rl below text_rl, the RL model trained without the tool? That is the counterfactual,
-    and it is only as fair as the pair is matched (use a same-recipe pair, e.g. VerlTool)."""
+
+def _describe(m, lo, hi, p_adj):
+    if m != m:
+        return "no data"
+    if p_adj == p_adj and p_adj < 0.05:
+        return "above" if m > 0 else "below"
+    return "inconclusive"
+
+
+def verdict(df: pd.DataFrame, cond: str = "no_code", iters: int = 2000):
+    """Readout for one condition (same prompt and harness for every model), base first.
+
+    Contrasts at pass@1 and pass@k (k = the largest every arm supports), paired over problems, 95%
+    bootstrap CIs, two-sided bootstrap p-values Holm-adjusted across the contrasts printed here; "*"
+    marks adjusted p < 0.05. A difference is called above or below only when that holds; otherwise it is
+    inconclusive, with its interval.
+      tool_on                 positive control: tool_rl must beat base with the tool, or tool training
+                              did not take and the tool-off comparisons cannot be read as atrophy tests.
+      any other condition     erosion: tool_rl vs base. Attribution, only if text_rl ran: text_rl vs base
+                              and tool_rl vs text_rl, read together (a gap between tool_rl and text_rl
+                              with tool_rl level with base is text_rl's gain, not a cost of the tool).
+    Returns {(a, b, k): (mean, lo, hi, p_adj, n_problems)}."""
     pk = passk_table(df)
     sub = pk[pk.condition == cond]
     tags = set(sub.tag)
     if not {"base", "tool_rl"} <= tags:
         print(f"[{cond}] need at least base and tool_rl; have {sorted(tags)}")
-        return
-    n = int(sub.n_samples.min())
-    kmax = ks_for(n)[-1]
-    print(f"[{cond}] {sub.n_problems.min()} problems, n={n}, kmax={kmax}")
-    pairs = [("tool_rl", "base")] + ([("text_rl", "base"), ("tool_rl", "text_rl")] if "text_rl" in tags else [])
-    res = {}
-    for a, b in pairs:
-        for k in (1, kmax):
-            m, lo, hi = paired_diff(df, (a, cond), (b, cond), k, iters=iters)
-            res[(a, b, k)] = (m, lo, hi)
-            sig = "" if lo <= 0 <= hi else "  *"
-            print(f"  pass@{k:<4} {a:>7} - {b:<7} = {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]{sig}")
+        return {}
+    kmax = shared_kmax(df[df.condition == cond])
+    pairs = [("tool_rl", "base")] + ([("text_rl", "base"), ("tool_rl", "text_rl")]
+                                     if "text_rl" in tags and cond != "tool_on" else [])
+    raw = {(a, b, k): paired_diff(df, (a, cond), (b, cond), k, iters=iters, full=True)
+           for a, b in pairs for k in (1, kmax)}
+    keys = list(raw)
+    adj = dict(zip(keys, _holm([raw[x][3] for x in keys])))
+    res = {x: (raw[x][0], raw[x][1], raw[x][2], adj[x], raw[x][4]) for x in keys}
+    n_pairs = min(v[4] for v in res.values())
+    print(f"[{cond}] {n_pairs} problems paired, k up to {kmax}; Holm-adjusted over {len(keys)} contrasts")
+    for (a, b, k), (m, lo, hi, p, _) in res.items():
+        star = "  *" if p == p and p < 0.05 else ""
+        print(f"  pass@{k:<4} {a:>7} - {b:<7} = {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]  p_adj={p:.3f}{star}")
     g = df[df.condition == cond].groupby("tag")
     er = (g["arith_wrong"].sum() / g["arith_n"].sum() * 100).round(2)
     print("  arithmetic error rate (%):", er.to_dict())
-    below_base = any(res[("tool_rl", "base", k)][2] < 0 for k in (1, kmax))
-    above_base = any(res[("tool_rl", "base", k)][1] > 0 for k in (1, kmax))
+
+    def call(a, b):
+        d1, dk = _describe(*res[(a, b, 1)][:4]), _describe(*res[(a, b, kmax)][:4])
+        return d1, dk
+
+    t1, tk = call("tool_rl", "base")
     if cond == "tool_on":
-        print("  -> positive control (both with the tool): "
-              + ("tool_rl above base: tool training worked" if above_base else
-                 "tool_rl NOT above base with the tool: training did not take, tool-off results are hard to read"))
-        return
-    print("  -> erosion test (vs untrained base): "
-          + ("tool_rl BELOW its base: erosion" if below_base else
-             "tool_rl above its base: no erosion" if above_base else "tool_rl level with its base: no erosion, no gain"))
+        ok = "above" in (t1, tk) and "below" not in (t1, tk)
+        print("  -> positive control: " + ("tool_rl above base with the tool: tool training worked" if ok else
+              f"FAILED (pass@1 {t1}, pass@{kmax} {tk}): tool_rl is not shown above base with the tool, so the "
+              "tool-off contrasts cannot be read as tests of atrophy"))
+        return res
+    if t1 == "above" and tk == "below":
+        msg = f"sharpening: tool_rl above base at pass@1 but below at pass@{kmax}"
+    elif "below" in (t1, tk):
+        msg = f"tool_rl BELOW base (pass@1 {t1}, pass@{kmax} {tk}): erosion"
+    elif "above" in (t1, tk):
+        msg = f"tool_rl above base (pass@1 {t1}, pass@{kmax} {tk}): no erosion"
+    else:
+        m, lo, hi = res[("tool_rl", "base", kmax)][:3]
+        msg = (f"inconclusive: no difference detected (pass@{kmax} {m:+.3f} [{lo:+.3f}, {hi:+.3f}]); "
+               "this is not evidence of no erosion")
+    print("  -> erosion test (tool_rl vs untrained base): " + msg)
     if "text_rl" in tags:
-        d1, dk = res[("tool_rl", "text_rl", 1)], res[("tool_rl", "text_rl", kmax)]
-        if d1[2] < 0 or dk[2] < 0:
-            msg = "tool_rl below text_rl: a tool-specific cost relative to RL without the tool"
-        elif d1[1] > 0 or dk[1] > 0:
-            msg = "tool_rl above text_rl: tool training helped tool-free reasoning (internalization)"
+        x1, xk = call("text_rl", "base")
+        y1, yk = call("tool_rl", "text_rl")
+        text_up = "above" in (x1, xk)
+        tool_below_text = "below" in (y1, yk)
+        if "below" in (t1, tk):
+            att = ("text_rl also below base: the drop is RL's, not specific to the tool" if "below" in (x1, xk)
+                   else "text_rl not below base: the drop is specific to tool training")
+        elif tool_below_text and text_up:
+            att = "text_rl rose above base and tool_rl did not: RL without the tool gained, tool RL did not"
+        elif tool_below_text:
+            att = "tool_rl below text_rl, neither clearly different from base"
         else:
-            msg = "tool_rl and text_rl overlap at every k: no tool-specific effect detected"
-        print("  -> tool-specific test (vs text_rl): " + msg)
+            att = "no difference between tool_rl and text_rl detected"
+        print("  -> attribution (vs text_rl): " + att)
+    return res

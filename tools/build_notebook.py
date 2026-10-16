@@ -148,7 +148,9 @@ OVERWRITE = False              # False: only missing arms. True: redo all. ["no_
 RUN_ID = "2026-10-16_verltool-1.5b"   # the stage-1 run; None would start a new folder named by today's date
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
-RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
+RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}"
+if SMOKE and not RUN_ID.endswith("-smoke"):
+    RUN_ID += "-smoke"           # a smoke run never writes into the real run folder
 OUT = f"{RUNS}/{RUN_ID}"
 os.makedirs(RUNS, exist_ok=True)
 existing = sorted(d for d in os.listdir(RUNS) if os.path.isdir(f"{RUNS}/{d}"))
@@ -162,16 +164,17 @@ CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, template=TEMPLATE, co
               top_p=TOP_P, seed=SEED, max_calls=MAX_CALLS, chunk=CHUNK,
               created=datetime.datetime.now().isoformat(timespec="seconds"))
 cfg_path = f"{OUT}/config.json"
-if os.path.exists(cfg_path):
-    old = json.load(open(cfg_path))
-    diff = [k for k in ("models", "template", "conditions_by_model", "datasets", "max_tokens", "max_model_len",
-                        "temperature", "top_p", "seed", "max_calls")
-            if json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
-    print(f"config.json from {old.get('created', '?')}" + (f"; DIFFERS in {diff}: finished arms keep their old "
-          "settings. Added arms or datasets are fine; changed sampling settings want a new RUN_ID" if diff else "; same settings"))
-else:
+KEYS = ("models", "template", "conditions_by_model", "datasets", "max_tokens", "max_model_len", "temperature",
+        "top_p", "seed", "max_calls")
+old = json.load(open(cfg_path)) if os.path.exists(cfg_path) else None
+diff = [k for k in KEYS if old and json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
+if old is None or diff:
+    # config.json always describes the latest settings; earlier ones are kept in its history
+    CONFIG["history"] = (old.pop("history", []) + [old]) if old else []
     json.dump(CONFIG, open(cfg_path, "w"), indent=1)
-    print("wrote", cfg_path)
+print("config.json:", "new" if old is None else (f"updated, changed {diff} (earlier settings kept in its history). "
+      "Finished arms keep the settings they were made with; arms with fewer samples than asked are redone"
+      if diff else "same settings"))
 """
 
 RUN_SETUP = r"""
@@ -191,17 +194,20 @@ def arm_files(tag, dataset):
 
 
 def status(tag):
-    # What Drive holds for this model. Returns how many arms still need generation.
+    # What Drive holds for this model, using gen.py's own rule for "done". Returns how many arms gen.py
+    # will (re)generate.
+    import gen
     missing = 0
     for ds, (n_prob, n_samp) in DATASETS.items():
         for cond, jsonl, meta, partial in arm_files(tag, ds):
             if meta.exists():
                 m = json.load(open(meta))
                 note = f"done     n={m['n']}  problems={m['n_problems']}  {m['gen_seconds'] / 60:.0f} min"
-                if m["n"] < n_samp or (n_prob and m["n_problems"] < n_prob):
-                    note += "   <- FEWER problems/samples than DATASETS asks; set OVERWRITE or a new RUN_ID"
-                elif m["n"] > n_samp or (n_prob and m["n_problems"] > n_prob):
-                    note += "   (more than DATASETS asks: fine, used as is)"
+                if not gen.arm_done(meta, n_samp, n_prob):
+                    note += "   <- fewer problems/samples than DATASETS asks: will be REDONE (old kept as .replaced)"
+                    missing += 1
+                elif m["n"] > n_samp:
+                    note += "   (more samples than DATASETS asks: fine, used as is)"
             elif partial.exists():
                 pids = set()
                 for line in open(partial):

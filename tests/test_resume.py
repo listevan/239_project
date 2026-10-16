@@ -153,6 +153,35 @@ def test_overwrite_conditions_and_multi_dataset():
                 assert "unknown" in str(e)
 
 
+def test_resume_never_mixes_settings_and_redo_resumes_after_crash():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.crash_on_call = 2
+        try:
+            run(out, conds="tool_on")                                          # crash after chunk 1 under T=0.6
+            raise AssertionError("expected the simulated crash")
+        except RuntimeError:
+            pass
+        FakeLLM.calls, FakeLLM.crash_on_call = [], None
+        log = run(out, "--temperature", "1.0", conds="tool_on")               # resume under other settings
+        assert "resuming" not in log and [len(c) for c in FakeLLM.calls] == [2, 2, 1]   # nothing reused
+        recs = records(arm(out, "tool_on"))
+        assert len({r["fp"] for r in recs}) == 1 and len(recs) == 10
+        meta = json.load(open(gen.meta_path(arm(out, "tool_on"))))
+        assert meta["temperature"] == 1.0 and "commit" in meta and meta["fp"] == recs[0]["fp"]
+        # redo with overwrite, crash midway, rerun without overwrite: the redo resumes, the old arm stays retired
+        FakeLLM.calls, FakeLLM.crash_on_call = [], 2
+        try:
+            run(out, "--temperature", "1.0", "--overwrite-conditions", "tool_on", conds="tool_on")
+            raise AssertionError("expected the simulated crash")
+        except RuntimeError:
+            pass
+        assert not arm(out, "tool_on").exists() and Path(str(arm(out, "tool_on")) + ".replaced").exists()
+        FakeLLM.calls, FakeLLM.crash_on_call = [], None
+        log = run(out, "--temperature", "1.0", conds="tool_on")
+        assert "resuming, 2 problems already on disk" in log and arm(out, "tool_on").exists()
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
