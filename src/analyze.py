@@ -1,14 +1,13 @@
-"""Load gen.py results, compute pass@k, arithmetic error rates, and plot.
+"""pass@k, failure modes, tool-call behaviour, figures and the verdict for one dataset of a run.
 
-Usage in a notebook:
     import analyze as an
-    df = an.load_results("results/math-1.5b/math500")
-    an.summary(df)                 # one row per (tag, condition)
-    an.calls_table(df)             # tool-call behaviour: how many called, how often, retries after a denial
-    an.plot(df, ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off"])   # one panel
-    an.plot(df, {"base": ["base prompt_off", "base tool_on"], "tool_rl": [...]})    # one panel per key
-    an.plot_passk(df)              # older view: one panel per condition, models as lines
-    an.verdict(df)                 # atrophy / internalization / overlap readout
+    df = an.load_results("<run>/aime_all")           # graded rows (src/grade.py)
+    an.summary(df)                                    # one row per (model, condition)
+    an.calls_table(df)                                # who called the tool, how often, retries after a denial
+    an.plot(df, ["tool_rl no_code", "base no_code"])  # pass@k curves; a dict {title: [lines]} gives panels
+    an.verdict(df, "no_code")                         # tool_rl vs base first (atrophy), then vs text_rl
+
+Works on any condition names, so runs made with older conditions still load and plot.
 """
 import json
 import math
@@ -18,35 +17,37 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROLE_ORDER = ["base", "text_rl", "tool_rl"]
+ROLE_ORDER = ["base", "tool_rl", "text_rl"]
 # dataviz reference palette, categorical slots 1-3 (CVD-validated): blue, orange, aqua
 ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
-COND_ORDER = ["tool_on", "env_denied", "no_code", "prompt_off", "assist_denied", "prose_only", "prose_redirect",
-              "plain_cot"]
-COND_STYLE = {"prompt_off": "-", "env_denied": "--", "assist_denied": (0, (6, 2)), "prose_only": "-.",
-              "prose_redirect": (0, (3, 1, 1, 1)), "no_code": "-", "tool_on": ":", "plain_cot": (0, (5, 1))}
-COND_MARK = {"prompt_off": "o", "env_denied": "s", "assist_denied": "P", "prose_only": "v", "prose_redirect": "X",
-             "no_code": "D", "tool_on": "^", "plain_cot": "*"}
-# conditions get hues of their own (reference palette slots 7, 8, 4, 6, validated as a set) so a
-# per-model panel never reuses a model color
-COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "assist_denied": "#1c5cab", "prose_only": "#e87ba4",
-              "prose_redirect": "#52514e", "no_code": "#008300", "tool_on": "#eda100", "plain_cot": "#9a9890"}
-ROLE_STYLE = {"base": "-", "text_rl": "--", "tool_rl": ":"}
+ROLE_STYLE = {"base": "-", "tool_rl": ":", "text_rl": "--"}
+COND_ORDER = ["tool_on", "env_denied", "no_code"]
+# conditions get hues of their own (slots 4, 8, 6 of the same palette) so a per-model panel never reuses a
+# model color; conditions from older runs keep the colors they were plotted with
+COND_COLOR = {"tool_on": "#eda100", "env_denied": "#e34948", "no_code": "#008300",
+              "prompt_off": "#6250d6", "assist_denied": "#1c5cab", "prose_only": "#e87ba4", "prose_redirect": "#52514e"}
+COND_STYLE = {"tool_on": ":", "env_denied": "--", "no_code": "-"}
+COND_MARK = {"tool_on": "^", "env_denied": "s", "no_code": "D"}
 GRAY = "#52514e"
-# default arms of the headline figure: every model asked for code and denied it, plus the base with the tool
-MAIN_ARMS = [("tool_rl", "env_denied"), ("text_rl", "env_denied"), ("base", "env_denied"), ("base", "tool_on")]
+
+
+def cond_rank(cond):
+    return COND_ORDER.index(cond) if cond in COND_ORDER else len(COND_ORDER)
+
+
+def role_rank(tag):
+    return ROLE_ORDER.index(tag) if tag in ROLE_ORDER else len(ROLE_ORDER)
 
 
 def load_results(results_dir, allow_ungraded=False) -> pd.DataFrame:
-    """Every *.jsonl in the folder as one DataFrame. Raises if any record is still ungraded
-    (gen.py --no-grade) unless allow_ungraded, since pass@k would silently be wrong."""
+    """Every *.jsonl in the folder as one DataFrame. Raises if any row is ungraded (gen.py writes them
+    ungraded) unless allow_ungraded, since pass@k would silently be wrong."""
     paths = sorted(Path(results_dir).glob("*.jsonl"))
     if not paths:
         raise FileNotFoundError(f"no .jsonl under {results_dir}")
     frames = []
     for p in paths:
-        rows = [json.loads(line) for line in open(p)]
-        f = pd.DataFrame(rows)
+        f = pd.DataFrame([json.loads(line) for line in open(p) if line.strip()])
         f["file"] = p.name
         frames.append(f)
     df = pd.concat(frames, ignore_index=True)
@@ -55,8 +56,8 @@ def load_results(results_dir, allow_ungraded=False) -> pd.DataFrame:
         df["dataset"] = Path(results_dir).name
     n_un = int(df["correct"].isna().sum()) if "correct" in df else len(df)
     if n_un and not allow_ungraded:
-        raise ValueError(f"{n_un} of {len(df)} records in {results_dir} are ungraded: "
-                         f"run  python src/grade.py {results_dir}  first")
+        raise ValueError(f"{n_un} of {len(df)} rows in {results_dir} are ungraded: run  python src/grade.py "
+                         f"{results_dir}  (or src/report.py, which grades first)")
     if not n_un:
         df["correct"] = df["correct"].astype(bool)
     return df
@@ -93,7 +94,9 @@ def passk_table(df: pd.DataFrame) -> pd.DataFrame:
         for k in ks_for(n):
             row[f"pass@{k}"] = float(np.mean([pass_at_k(int(r.n), int(r.c), k) for r in grp.itertuples()]))
         rows.append(row)
-    return pd.DataFrame(rows).sort_values(["condition", "tag"]).reset_index(drop=True)
+    out = pd.DataFrame(rows)
+    out["_c"], out["_r"] = out.condition.map(cond_rank), out.tag.map(role_rank)
+    return out.sort_values(["_c", "condition", "_r"]).drop(columns=["_c", "_r"]).reset_index(drop=True)
 
 
 def bootstrap_passk(df: pd.DataFrame, tag: str, cond: str, k: int, iters: int = 1000, seed: int = 0):
@@ -125,85 +128,33 @@ def paired_diff(df: pd.DataFrame, a: tuple, b: tuple, k: int, iters: int = 1000,
 
 
 def summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Headline table: accuracy, pass@kmax, failure modes, arithmetic error rate."""
+    """Headline table, one row per (model, condition): accuracy, pass@kmax, failure modes, tool use,
+    arithmetic error rate."""
     pk = passk_table(df)
     rows = []
     for (tag, cond), g in df.groupby(["tag", "condition"]):
         n = int(g.groupby("problem_id").size().min())
         kmax = ks_for(n)[-1]
         pkrow = pk[(pk.tag == tag) & (pk.condition == cond)].iloc[0]
-        arith_n = int(g["arith_n"].sum())
+        arith_n = int(g["arith_n"].fillna(0).sum())
         rows.append(dict(
-            tag=tag, condition=cond, template=g["template"].iloc[0],
-            problems=g["problem_id"].nunique(), samples=n,
+            tag=tag, condition=cond, problems=g["problem_id"].nunique(), samples=n,
             **{"pass@1": round(pkrow["pass@1"], 3), f"pass@{kmax}": round(pkrow[f"pass@{kmax}"], 3)},
             pass1_boxed=(round(float(g["correct_boxed"].astype(float).mean()), 3)
                          if "correct_boxed" in g and g["correct_boxed"].notna().all() else float("nan")),
             trunc_pct=round(100 * g["truncated"].mean(), 1),
-            no_boxed_pct=round(100 * (~g["boxed_present"]).mean(), 1),
-            code_pct=round(100 * g["code_emitted"].mean(), 1),
-            fake_out_pct=round(100 * (g["fake_outputs"] > 0).mean(), 1),
+            no_boxed_pct=round(100 * (~g["boxed_present"].astype(bool)).mean(), 1),
             called_pct=round(100 * (g["n_calls"] > 0).mean(), 1),
             calls_mean=round(g["n_calls"].mean(), 2), denied_mean=round(g["n_denied"].mean(), 2),
             exec_err_mean=round(g["n_exec_err"].mean(), 2),
-            arith_err_pct=round(100 * g["arith_wrong"].sum() / arith_n, 2) if arith_n else float("nan"),
-            arith_checked=arith_n, arith_coverage_pct=round(100 * (g["arith_n"] > 0).mean(), 1),
+            fake_out_pct=round(100 * (g["fake_outputs"] > 0).mean(), 1),
+            arith_err_pct=round(100 * g["arith_wrong"].fillna(0).sum() / arith_n, 2) if arith_n else float("nan"),
+            arith_checked=arith_n, arith_coverage_pct=round(100 * (g["arith_n"].fillna(0) > 0).mean(), 1),
             tokens_mean=round(g["gen_tokens"].mean()),
         ))
     out = pd.DataFrame(rows)
-    out["_r"] = out["tag"].map({t: i for i, t in enumerate(ROLE_ORDER)}).fillna(9)
-    return out.sort_values(["condition", "_r"]).drop(columns="_r").reset_index(drop=True)
-
-
-def _plot_lines(df, pk, ax, ci, iters, label_cond=True):
-    for _, r in pk.iterrows():
-        tag, cond = r["tag"], r["condition"]
-        ks = ks_for(int(r["n_samples"]))
-        ys = [r[f"pass@{k}"] for k in ks]
-        color = ROLE_COLOR.get(tag, "#52514e")
-        ax.plot(ks, ys, COND_STYLE.get(cond, "-"), color=color, lw=2,
-                marker=COND_MARK.get(cond, "o"), ms=6,
-                label=f"{tag} / {cond}" if label_cond else tag)
-        if ci:
-            lo, hi = [], []
-            for k in ks:
-                _, l, h = bootstrap_passk(df, tag, cond, k, iters=iters)
-                lo.append(l); hi.append(h)
-            ax.fill_between(ks, lo, hi, color=color, alpha=0.12, lw=0)
-    kmax = ks_for(int(pk["n_samples"].max()))
-    ax.set_xscale("log", base=2)
-    ax.set_xticks(kmax)
-    ax.set_xticklabels([str(k) for k in kmax])
-    ax.set_xlabel("k (samples)")
-    ax.set_ylim(0, 1)
-    ax.grid(True, color="#e6e5e1", lw=0.8)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    ax.legend(frameon=False, fontsize=8, loc="lower right")
-
-
-def plot_passk(df: pd.DataFrame, title=None, ci=True, iters=300, facet=True):
-    """One panel per condition (three models per panel), or one panel with every arm."""
-    import matplotlib.pyplot as plt
-    pk = passk_table(df)
-    conds = [c for c in COND_ORDER if c in set(pk.condition)] + \
-            sorted(set(pk.condition) - set(COND_ORDER))
-    if not facet or len(conds) == 1:
-        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=120)
-        _plot_lines(df, pk, ax, ci, iters)
-        ax.set_ylabel("pass@k")
-        ax.set_title(title or f"pass@k, {df['problem_id'].nunique()} problems", loc="left")
-        return fig
-    fig, axes = plt.subplots(1, len(conds), figsize=(4.6 * len(conds), 4.2), dpi=120, sharey=True)
-    for ax, cond in zip(axes, conds):
-        sub = pk[pk.condition == cond].copy()
-        sub["_r"] = sub["tag"].map({t: i for i, t in enumerate(ROLE_ORDER)}).fillna(9)
-        _plot_lines(df[df.condition == cond], sub.sort_values("_r"), ax, ci, iters, label_cond=False)
-        ax.set_title(cond, loc="left")
-    axes[0].set_ylabel("pass@k")
-    fig.suptitle(title or f"pass@k, {df['problem_id'].nunique()} problems", x=0.01, ha="left")
-    fig.tight_layout()
-    return fig
+    out["_c"], out["_r"] = out.condition.map(cond_rank), out.tag.map(role_rank)
+    return out.sort_values(["_c", "condition", "_r"]).drop(columns=["_c", "_r"]).reset_index(drop=True)
 
 
 def calls_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -236,9 +187,8 @@ def calls_table(df: pd.DataFrame) -> pd.DataFrame:
             row["calls>=5" if k == 5 else f"calls={k}"] = int(hist.get(k, 0))
         rows.append(row)
     out = pd.DataFrame(rows)
-    out["_r"] = out["tag"].map({t: i for i, t in enumerate(ROLE_ORDER)}).fillna(9)
-    out["_c"] = out["condition"].map({c: i for i, c in enumerate(COND_ORDER)}).fillna(9)
-    return out.sort_values(["_c", "_r"]).drop(columns=["_r", "_c"]).reset_index(drop=True)
+    out["_c"], out["_r"] = out.condition.map(cond_rank), out.tag.map(role_rank)
+    return out.sort_values(["_c", "condition", "_r"]).drop(columns=["_c", "_r"]).reset_index(drop=True)
 
 
 def file_stamp() -> str:
@@ -301,8 +251,8 @@ def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
         return False
     r = row.iloc[0]
     ks = ks_for(int(r["n_samples"]))
-    ax.plot(ks, [r[f"pass@{k}"] for k in ks], style, color=color, lw=2,
-            marker=COND_MARK.get(cond, "o"), ms=6, label=label)
+    ax.plot(ks, [r[f"pass@{k}"] for k in ks], style, color=color, lw=2, marker=COND_MARK.get(cond, "o"), ms=6,
+            label=label)
     if ci:
         lo, hi = zip(*[bootstrap_passk(df, tag, cond, k, iters=iters)[1:] for k in ks])
         ax.fill_between(ks, lo, hi, color=color, alpha=0.12, lw=0)
@@ -310,7 +260,7 @@ def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
 
 
 def _arm(line):
-    """'tool_rl prompt_off', 'tool_rl/prompt_off' or ('tool_rl', 'prompt_off') -> ('tool_rl', 'prompt_off')."""
+    """'tool_rl no_code', 'tool_rl/no_code' or ('tool_rl', 'no_code') -> ('tool_rl', 'no_code')."""
     if isinstance(line, str):
         parts = line.replace("/", " ").split()
         if len(parts) != 2:
@@ -323,14 +273,11 @@ def _arm(line):
 def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None, caption=None):
     """Draw pass@k curves.
 
-    lines  a list of "model condition" strings for one panel, or a dict {panel title: [lines]} for
-           several panels sharing the y axis. Models: base, text_rl, tool_rl. Conditions: prompt_off,
-           env_denied, tool_on, plain_cot. "tool_rl/prompt_off" and ("tool_rl", "prompt_off") also work.
-    color  "model" or "condition": what the color encodes. The other one sets the line style, but only
-           when it varies within a panel.
-    ci     shade a 95% bootstrap band over problems.
-    save   path of a PNG to write (use file_stamp() in the name to date it).
-    caption small gray line at the bottom, e.g. provenance(results_dir).
+    lines    a list of "model condition" strings for one panel, or a dict {panel title: [lines]} for panels
+             sharing the y axis. Models: base, tool_rl, text_rl. Conditions: tool_on, env_denied, no_code.
+    color    "model" or "condition": what the color encodes; the other sets the line style when it varies.
+    ci       shade a 95% bootstrap band over problems.
+    save     path of a PNG to write.   caption  small gray line under the plot, e.g. provenance(dir).
     Lines whose arm is not in df are listed and skipped.
     """
     import matplotlib.pyplot as plt
@@ -344,11 +291,9 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
         vary_tag, vary_cond = len({t for t, _ in arms}) > 1, len({c for _, c in arms}) > 1
         for tag, cond in arms:
             if color == "condition":
-                col = COND_COLOR.get(cond, GRAY)
-                style = ROLE_STYLE.get(tag, "-") if vary_tag else "-"
+                col, style = COND_COLOR.get(cond, GRAY), (ROLE_STYLE.get(tag, "-") if vary_tag else "-")
             else:
-                col = ROLE_COLOR.get(tag, GRAY)
-                style = COND_STYLE.get(cond, "-") if vary_cond else "-"
+                col, style = ROLE_COLOR.get(tag, GRAY), (COND_STYLE.get(cond, "-") if vary_cond else "-")
             if not _draw_arm(ax, df, pk, tag, cond, col, style, f"{tag} {cond}", ci, iters):
                 missing.append(f"{tag} {cond}")
         _format_axis(ax, pk["n_samples"].max())
@@ -372,20 +317,6 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
     if save:
         fig.savefig(save, bbox_inches="tight")
     return fig
-
-
-def plot_passk_by_model(df: pd.DataFrame, title=None, ci=True, iters=300):
-    """One panel per model, its conditions as lines. Same as plot(df, {model: [...]}, color="condition")."""
-    pk = passk_table(df)
-    tags = [t for t in ROLE_ORDER if t in set(pk.tag)] + sorted(set(pk.tag) - set(ROLE_ORDER))
-    panels = {t: [f"{t} {c}" for c in COND_ORDER if c in set(pk[pk.tag == t].condition)] for t in tags}
-    return plot(df, panels, title=title or f"pass@k within each model, {df['problem_id'].nunique()} problems",
-                color="condition", ci=ci, iters=iters)
-
-
-def plot_passk_main(df: pd.DataFrame, arms=MAIN_ARMS, title=None, ci=True, iters=300):
-    """The headline arms on one axis. Same as plot(df, [...])."""
-    return plot(df, list(arms), title=title or f"pass@k, {df['problem_id'].nunique()} problems", ci=ci, iters=iters)
 
 
 def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):

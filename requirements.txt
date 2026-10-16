@@ -1,6 +1,0 @@
-vllm>=0.10
-math-verify>=0.8
-datasets>=3.0
-hf_transfer
-pandas
-matplotlib

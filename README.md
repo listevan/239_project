@@ -1,82 +1,78 @@
 # 239_project: tool atrophy pilot
 
-Does RL with a tool erode the skill the tool replaces? One base model, three
-checkpoints (base, text-only RL, tool RL), all evaluated with the tool turned off:
-pass@k curves plus an arithmetic error rate. Math first, because the published
-hook (CIR 2505.24480 Fig. 6) and the controls (Oat-Zero, SimpleRL-Zoo) exist there.
-The full plan is in `docs/experiment1_plan.md`.
+Does RL with a code interpreter erode the reasoning the interpreter replaces? Three
+checkpoints from one base model, evaluated with the same prompt under three ways of
+handling code, on hard math where the tool matters.
+
+## Design
+
+| condition | what happens to code |
+|---|---|
+| `tool_on` | it runs (`python -I` in a temp dir, 10 s timeout, 4 calls, then a budget message) |
+| `env_denied` | it does not run: the output slot says "No interpreter is available; the code was not executed" |
+| `no_code` | it cannot be written: logit ban on backticks and program-only keywords ([docs/no_code_ban.md](docs/no_code_ban.md)) |
+
+| model | arms | |
+|---|---|---|
+| `tool_rl` | all three | VerlTool ToRL recipe on Qwen2.5-Math-1.5B, interpreter on (360 steps) |
+| `base` | all three | Qwen2.5-Math-1.5B, untrained |
+| `text_rl` | `no_code` | the same VerlTool recipe, interpreter off (430 steps) |
+
+Both RL runs share data (MATH train), algorithm (GRPO n16 b128 lr1e-6, one tool call)
+and prompt; every arm uses that training prompt (`verltool_torl`, read from their
+released rollouts).
+
+- **Main test:** tool_rl vs base with the tool off (`env_denied`, `no_code`). Below
+  base is atrophy: the model lost something it had.
+- **Positive control:** tool_rl above base with the tool on.
+- **Attribution:** RL without a tool can fall below base at large k by itself
+  (Yue et al. 2504.13837), so text_rl `no_code` shows whether a deficit belongs to the tool.
+
+Datasets, 64 samples each:
+
+- `aime_all`: AIME 2022-2025, 120 problems, integer answers. On AIME the tool was
+  worth 14 to 15 points of pass@1 to ToRL-1.5B.
+- `olymmath_easy`: OlymMATH-EN-Easy, 100 AIME-level problems from printed sources,
+  released 2025, after Qwen2.5-Math. The Hard split floors at 1.5B (a stronger 1.5B
+  model scores 1.5% pass@1 on it), MATH-500 is too easy for the tool to matter.
+
+Caveat: AIME 2022-2024 may be in Qwen2.5-Math's pretraining data. It affects all
+three models alike, and the report lists each problem's year (`subject`) for a check.
 
 ## Layout
 
-| Path | What |
+| path | what |
 |---|---|
-| `notebooks/tool_atrophy_pilot.ipynb` | the Colab notebook: install, clone this repo onto the VM, configure, run |
-| `src/gen.py` | vLLM sampler with the tool loop and the conditions below; writes JSONL |
-| `src/analyze.py` | pass@k (unbiased estimator), paired bootstrap CIs, summary table, plot, verdict |
-| `src/arith_check.py` | exact-rational checker for `a op b = c` in prose |
-| `tools/build_notebook.py` | regenerates the notebook from its cell templates (code is cloned, not embedded) |
-| `tests/test_gen.py` | laptop tests for the tool loop, executor, grader, records |
-| `docs/` | experiment plan and the two-idea memo |
+| `src/gen.py` | vLLM sampler: the three conditions, tool loop, no_code ban, dataset loaders, chunked checkpoints, ungraded JSONL |
+| `src/grade.py` | grades rows in place: math-verify (`correct`), boxed-only (`correct_boxed`), arithmetic check |
+| `src/arith_check.py` | exact-rational check of arithmetic steps in the prose |
+| `src/analyze.py` | pass@k, bootstrap CIs, summary and tool-call tables, `plot`, `verdict` |
+| `src/report.py` | the local command: grade, tables, verdicts, dated figures and CSVs |
+| `notebooks/tool_atrophy_pilot.ipynb` | Colab: install, Drive, clone this repo, configure, one cell per model |
+| `tools/build_notebook.py` | regenerates the notebook (`uv run tools/build_notebook.py`) |
+| `tests/` | laptop tests, no GPU (`for t in tests/test_*.py; do uv run $t; done`) |
+| `docs/` | the no_code ban checks, the 2026-10-15 AIME analysis, earlier plans |
 
-## Run it in Colab
+## Run
 
-1. Open `notebooks/tool_atrophy_pilot.ipynb` from this repo in VS Code (Colab
-   extension) or upload it to Colab. Runtime: a GPU. A100 runs every preset; L4
-   is fine for 1.5B; T4 only 1.5B.
-2. Run the cells top to bottom. Cell 3 clones or pulls the repo (public, no
-   token needed; a private fork can supply one, see the cell), so the VM runs
-   whatever is on GitHub: push local edits first. The config cell defaults to
-   the real run (`SMOKE = True` is a 10-minute wiring check).
-3. One run cell per checkpoint. Each cell first looks at Drive: finished arms
-   are loaded, not regenerated; an arm that was interrupted resumes from its
-   last checkpointed chunk (`CHUNK` problems, default 100). After a disconnect,
-   re-run the cell that was going.
-5. Colab only generates (`GRADE_ON_COLAB = False`). Grade and analyze on your
-   laptop, see below.
+1. Open the notebook in VS Code (Colab extension) or Colab, on a GPU runtime (A100).
+2. Run cells 1 to 6, then `run_model("tool_rl")`, `run_model("base")`,
+   `run_model("text_rl")`. Cell 4 clones the repo, so the VM runs what is on GitHub.
+   About 3.5 to 4 h; each model does AIME first. `SMOKE = True` is a 10-minute check.
+3. Every arm checkpoints to Drive every 100 problems; finished arms are never redone.
+   After a disconnect, re-run cells 1 to 6 and the model cell that was going.
 
-## Where runs live
+Runs land on Drive as `239_project/runs/<date>_verltool-1.5b/` with `config.json`,
+one folder per dataset, and `figures/` and `tables/` once reported.
 
-One folder per run on Drive, named by date and preset, under `239_project/runs/`:
+## Report (laptop)
 
 ```
-runs/2026-10-15_math-1.5b/
-    config.json                      the notebook settings that produced it
-    aime24/ aime25/                  one <model>__<condition>__<template>.jsonl + .meta.json per arm
-    figures/  tables/                written by report.py, every file dated
+uv sync                                   # once
+uv run src/report.py --list               # runs visible through Google Drive for desktop
+uv run src/report.py --run <run id>       # grade, tables, verdicts, figures
 ```
 
-`PRESET` defaults to `verltool-1.5b`: VerlTool's two runs of one ToRL recipe on
-Qwen2.5-Math-1.5B (MATH train, GRPO, same prompt), one with the interpreter and one
-without, plus the untrained base. `math-1.5b` (ToRL vs Oat-Zero) is kept, but those
-recipes differ in data and algorithm as well as the tool. The verdict reports
-tool_rl vs the base first (erosion) and tool_rl vs text_rl second (tool-specific).
-
-`DATASETS` maps each dataset to (problems, samples). Default: AIME 2022-2025
-(`aime_all`, 120 problems) and OlymMATH-Hard (`olymmath_hard`, 100), 64 samples
-each: hard sets where the interpreter is load-bearing. MATH-500 is not used for
-the atrophy test (the tool barely matters there). Arms per model: base and
-tool_rl run tool_on, env_denied and no_code; text_rl runs no_code only, to
-attribute a below-base result to the tool rather than to RL in general. `RUN_ID` defaults to today's date plus the
-preset; set it to an existing run to resume or extend one.
-
-## Grade and analyze locally
-
-Trajectories reach the laptop through Google Drive for desktop (the `239_project`
-folder may sit anywhere up to five levels under My Drive; both the notebook and
-`report.py` find it) or through the zip cell at the bottom of the notebook.
-
-```
-uv sync                                       # once: .venv from pyproject.toml (uv.lock pins it)
-uv run src/report.py --list                   # runs visible from this machine
-uv run src/report.py --run 2026-10-15_math-1.5b            # every dataset in the run
-uv run src/report.py --run 2026-10-15_math-1.5b --dataset gsm_hard
-```
-
-For each dataset, `report.py` grades ungraded rows in place first (`src/grade.py`:
-math-verify in worker processes with a per-row timeout, slowest rows reported,
-graded rows skipped), prints the summary, pass@k, tool-call and verdict tables,
-saves them as CSV under `<run>/tables/`, and saves `passk_by_model_<dataset>_<date>.png`
-and `passk_main_<dataset>_<date>.png` under `<run>/figures/`, each captioned with
-when its arms were generated. In a notebook, `import analyze as an` gives
-`an.load_results`, `an.summary`, `an.calls_table`, `an.passk_table`, `an.verdict`
-and `an.plot(df, ["model condition", ...])`.
+Figures per dataset: `passk_models_*` (one panel per model) and `passk_<condition>_*`
+(the models compared under one condition), stamped with when the data finished; the
+script asks before overwriting and offers to move older sets into `old/`.

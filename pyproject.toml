@@ -1,7 +1,7 @@
 [project]
 name = "tool-atrophy-pilot"
 version = "0.1.0"
-description = "Does tool-RL erode the skill the tool replaces? vLLM sampling harness (Colab), grader and analysis (laptop)."
+description = "Does RL with a code interpreter erode tool-free reasoning? vLLM harness (Colab), grading and report (laptop)."
 requires-python = ">=3.11"
 dependencies = [
     "math-verify>=0.8",
@@ -13,9 +13,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "nbformat",
-    "tokenizers>=0.23.3",
 ]                                     # tools/build_notebook.py
-gpu = ["vllm>=0.10", "datasets>=3.0", "hf_transfer"]   # generation; the Colab notebook installs these itself
+gpu = ["vllm>=0.10", "datasets>=3.0"]   # generation; the Colab notebook installs these itself
 
 [tool.uv]
 package = false

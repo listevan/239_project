@@ -1,20 +1,24 @@
 #!/usr/bin/env python
-"""Grade trajectories on any machine (no GPU, no vllm).
+"""Grade a folder of trajectories in place, on any machine (no GPU, no vllm).
 
-    python src/grade.py results/<run>/<dataset> [--workers N] [--timeout S] [--regrade]
+    python src/grade.py <run>/<dataset> [--workers N] [--timeout S] [--regrade]
 
-gen.py --no-grade writes rows with `correct`, `arith_n` and `arith_wrong` null. This fills them in
-place (atomic rewrite of each *.jsonl) and updates the .meta.json (graded, grader, pass1). Rows that
-already carry `correct` are left alone unless --regrade.
+gen.py writes rows with correct / correct_boxed / arith_n / arith_wrong null. This fills them and
+updates each .meta.json (graded, grader, pass1). Rows already graded are left alone unless --regrade.
 
-Grading runs in a pool of spawned worker processes: math-verify's own 5 s alarm catches most slow
-cases, and a row that still exceeds --timeout seconds is marked incorrect with grade_timeout=true
-so one pathological answer cannot stall an arm. The slowest rows are reported at the end.
+  correct        math-verify on the whole response (it also credits an unboxed final answer)
+  correct_boxed  math-verify on the last \\boxed{...} only (strict)
+  arith_*        steps checked / wrong by src/arith_check.py in the prose, code blocks excluded
+
+Grading runs in spawned worker processes: math-verify's own 5 s alarm catches most slow cases, and a
+row that still exceeds --timeout is marked incorrect with grade_timeout=true, so one pathological
+answer cannot stall an arm. src/report.py calls this before reporting.
 """
 import argparse
 import json
 import multiprocessing as mp
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -23,18 +27,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import arith_check  # noqa: E402
 import gen  # noqa: E402
 
+
+def make_grader():
+    """(grade(response, gold) -> bool, name). math-verify if installed, else a boxed-string match."""
+    try:
+        from math_verify import parse, verify  # type: ignore
+
+        def grade(response: str, gold: str) -> bool:
+            try:
+                return bool(verify(parse(gold if "\\boxed" in gold else f"${gold}$"), parse(response)))
+            except Exception:  # noqa: BLE001
+                return False
+        return grade, "math_verify"
+    except ImportError:
+        def norm(s):
+            return re.sub(r"\s+|\\left|\\right|\\!|\\,|\$", "", s or "").replace("dfrac", "frac")
+
+        def grade(response: str, gold: str) -> bool:
+            b = gen.last_boxed(response)
+            return b is not None and norm(b) == norm(gen.last_boxed(gold) or gold)
+        return grade, "string"
+
+
+def grade_boxed(grade, text, gold):
+    """Strict variant: only the last \\boxed{...} counts."""
+    b = gen.last_boxed(text)
+    return False if b is None else bool(grade("\\boxed{" + b + "}", gold))
+
+
 _GRADER = None
 
 
 def _grade_one(text, gold):
-    """Worker: (correct, arith_n, arith_wrong, seconds). Builds the grader once per process."""
+    """Worker: (correct, arith_n, arith_wrong, seconds, correct_boxed). Builds the grader once per process."""
     global _GRADER
     if _GRADER is None:
-        _GRADER = gen.make_grader()
+        _GRADER = make_grader()
     grade, _ = _GRADER
     t = time.time()
     correct = bool(grade(text, gold))
-    correct_boxed = gen.grade_boxed(grade, text, gold)
+    correct_boxed = grade_boxed(grade, text, gold)
     a_n, a_wrong, _ = arith_check.check(gen.strip_fenced(text))
     return correct, a_n, a_wrong, time.time() - t, correct_boxed
 
@@ -48,7 +80,7 @@ def _apply(r, result):
 
 
 def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one, log=print):
-    """Fill the grading fields of `recs` in place. workers=0 grades serially in this process.
+    """Fill the grading fields of `recs` in place; workers=0 grades serially in this process.
     Returns dict(n_graded, n_timeout, seconds, slowest=[(seconds, problem_id, sample_idx), ...])."""
     todo = [r for r in recs if regrade or r.get("correct") is None]
     t0, n_timeout, slow = time.time(), 0, []
@@ -67,8 +99,7 @@ def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one,
             if i % step == 0:
                 log(f"   {i}/{len(todo)} graded, {time.time() - t0:.0f}s")
     else:
-        ctx = mp.get_context("spawn")
-        pool = ctx.Pool(workers)
+        pool = mp.get_context("spawn").Pool(workers)
         try:
             futs = [(r, pool.apply_async(worker, (r["text"], r["gold"]))) for r in todo]
             for i, (r, f) in enumerate(futs, 1):
@@ -86,13 +117,18 @@ def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one,
     return dict(n_graded=len(todo), n_timeout=n_timeout, seconds=time.time() - t0, slowest=slow)
 
 
+def _pass1(recs):
+    vals = [r["correct"] for r in recs if r.get("correct") is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
 def grade_dir(results_dir, workers, timeout=60.0, regrade=False, log=print):
     """Grade every *.jsonl under results_dir in place. Returns one summary row per file."""
     results_dir = Path(results_dir)
     paths = sorted(results_dir.glob("*.jsonl"))
     if not paths:
         raise FileNotFoundError(f"no .jsonl under {results_dir}")
-    grader_name = gen.make_grader()[1]
+    grader_name = make_grader()[1]
     rows = []
     for path in paths:
         recs = [json.loads(line) for line in open(path) if line.strip()]
@@ -117,24 +153,19 @@ def grade_dir(results_dir, workers, timeout=60.0, regrade=False, log=print):
     return rows
 
 
-def _pass1(recs):
-    vals = [r["correct"] for r in recs if r.get("correct") is not None]
-    return sum(vals) / len(vals) if vals else None
-
-
 def default_workers():
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("results_dir", help="folder holding the *.jsonl files, e.g. results/math-1.5b/math500")
+    ap.add_argument("results_dir", help="folder holding the *.jsonl files, e.g. <run>/aime_all")
     ap.add_argument("--workers", type=int, default=default_workers(), help="worker processes (0 = serial)")
     ap.add_argument("--timeout", type=float, default=60.0, help="seconds per row before it is marked incorrect")
     ap.add_argument("--regrade", action="store_true", help="grade every row again, not only the null ones")
     args = ap.parse_args(argv)
     rows = grade_dir(args.results_dir, args.workers, args.timeout, args.regrade)
-    print(f"\n{len(rows)} file(s) in {args.results_dir}; next:  python src/report.py {args.results_dir}")
+    print(f"\n{len(rows)} file(s) graded in {args.results_dir}")
 
 
 if __name__ == "__main__":
