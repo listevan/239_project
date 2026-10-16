@@ -27,7 +27,10 @@ class FakeTok:
         return {"input_ids": text.split()}
 
     def get_vocab(self):
-        return {"a": 1, "```": 7, "`": 8, "python": 9}
+        return {"a": 1, "```": 7, "`": 8, "python": 9, "import": 10, "important": 11}
+
+    def convert_tokens_to_string(self, toks):
+        return "".join(toks)
 
 
 class FakeLLM:
@@ -268,7 +271,8 @@ def test_no_code_arm_bans_backticks_and_uses_native_prompt():
         with contextlib.redirect_stdout(buf):
             gen.main(["--model", "m/base", "--tag", "base", "--conditions", "no_code", "--native-template", "verltool_torl",
                       "--n", str(N), "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade"])
-        assert "no_code: 2 backtick tokens banned" in buf.getvalue() and FakeLLM.biases == [{7: -100.0, 8: -100.0}]
+        assert "no_code: 3 backtick + program-keyword tokens banned" in buf.getvalue()
+        assert FakeLLM.biases == [{7: -100.0, 8: -100.0, 10: -100.0}]            # backticks + import, not important
         assert (out / "math500" / "base__no_code__verltool_torl.jsonl").exists()
         assert "A conversation between User and Assistant" in FakeLLM.calls[0][0]
 

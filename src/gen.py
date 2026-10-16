@@ -15,13 +15,14 @@ Every model gets the same grid. Conditions:
                backtick. Kept for the record: ToRL and the base answer the ban with
                unfenced Python and loop until the budget ends (69% truncation), so
                it measures a spiral, not ability. Use prose_redirect instead.
-  no_code      the model's own training prompt (same as tool_on and env_denied), but code
-               cannot be written: every backtick token is banned from the start, and the
-               moment an unfenced program starts (a line beginning import / from / def /
-               print( / a bare "python" line, or \\text{import ...}) the opener is cut and
-               "Let me do this computation by hand instead" is spliced in. n_calls = how
-               often it tried. The ability test of the three-condition design
-               (tool_on / env_denied / no_code), where only the code handling differs.
+  no_code      the model's own training prompt (same as tool_on and env_denied), and a logit
+               ban on the tokens programs need and math prose does not: every backtick token
+               plus print / import / elif / sympy / numpy / itertools and == += -= *= /= != //
+               #. Nothing is inserted or redirected. Chosen and checked on 12,000 real code
+               blocks and 12,000 code-free prose samples (docs/no_code_ban.md): blocks 99.99%
+               of code blocks, 96% within their first 10 tokens, touches 0.45% of prose.
+               Words shared with math prose (for, in, if, range, return, def, lambda, np) stay
+               allowed: \\lambda tokenizes as backslash + "lambda", and AIME uses "def" and "np".
   prose_redirect  shared no-code prompt. The moment the model opens a code fence the
                opener is cut and "Let me do this computation by hand instead" is
                spliced in, and generation continues. After --max-calls redirects the
@@ -118,11 +119,13 @@ DENIAL_ASSIST = ("No interpreter is available; the code was not executed and pro
                  "intermediate value, and only then give the final answer.")
 REDIRECT_TEXT = "Let me do this computation by hand instead, step by step.\n"
 FENCE_OPEN_STOPS = ("```python\n", "```py\n", "```\n")   # a fence opening under prose_redirect
-# The start of an unfenced program. Seen under the backtick ban (prose_only): the model announces
-# code, then writes it without a fence, at line start or wrapped in \text{}. Caught under no_code.
-UNFENCED_CODE_STOPS = ("\nimport ", "\nfrom ", "\ndef ", "\nprint(", "\npython\n",
-                       "\\text{import", "\\text{from", "\\text{def", "\\text{print")
-REDIRECT_STOPS = {"prose_redirect": FENCE_OPEN_STOPS, "no_code": UNFENCED_CODE_STOPS}
+REDIRECT_STOPS = {"prose_redirect": FENCE_OPEN_STOPS}
+# no_code ban: words match a whole token (after stripping whitespace) or a token that continues with
+# punctuation, never a longer word ("import" yes, "important" / "importância" no); symbols match exactly
+# ("#" yes, "###" markdown heading no).
+CODE_BAN_WORDS = ("print", "import", "elif", "sympy", "symp", "numpy", "itertools")
+CODE_BAN_SYMBOLS = ("==", "+=", "-=", "*=", "/=", "!=", "//", "#")
+_CODE_WORD_RE = re.compile(r"^(?:%s)(?!\w)" % "|".join(sorted(CODE_BAN_WORDS, key=len, reverse=True)))
 
 STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # model opens the output block itself
@@ -136,6 +139,29 @@ LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only", "prose_r
 BANNED_FROM_START = ("prose_only", "no_code")   # backtick ban on the whole arm
 SHARED_PROMPT_CONDITIONS = ("prompt_off", "prose_only", "prose_redirect")
 FENCE_BAN_BIAS = -100.0
+
+
+def _token_text(tok, raw, i):
+    try:
+        return tok.convert_tokens_to_string([raw])
+    except Exception:  # noqa: BLE001
+        return tok.decode([i])
+
+
+def code_token_ids(tok):
+    """Ids banned under no_code: every backtick token plus the program-only keywords above.
+    Matching is on the decoded token text, so byte-level forms (leading space, newline, tab) count."""
+    try:
+        vocab = tok.get_vocab()
+    except AttributeError:
+        return []
+    out = []
+    for raw, i in vocab.items():
+        d = _token_text(tok, raw, i)
+        st = d.strip()
+        if "`" in d or st in CODE_BAN_SYMBOLS or (st and _CODE_WORD_RE.match(st)):
+            out.append(i)
+    return sorted(out)
 
 
 def fence_token_ids(tok):
@@ -395,9 +421,6 @@ def round_stops_and_biases(cond, keep, final, max_calls, fence_bias):
         stops = [TEXT_STOPS if sp_ else TEXT_STOPS + list(FENCE_OPEN_STOPS) for sp_ in spent]
         biases = [fence_bias if sp_ else None for sp_ in spent]
         return stops, biases
-    if cond == "no_code":
-        # the ban holds throughout; redirects stay armed until the round cap
-        return (TEXT_STOPS if final else TEXT_STOPS + list(UNFENCED_CODE_STOPS)), [fence_bias] * len(keep)
     return (TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)), None
 
 
@@ -641,6 +664,7 @@ def main(argv=None):
     tok = llm.get_tokenizer()
     print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
     fence_ids = fence_token_ids(tok)
+    code_ids = code_token_ids(tok)
     fence_bias = {i: FENCE_BAN_BIAS for i in fence_ids} or None
     arm_bias = {"logit_bias": None}   # set per arm: the backtick ban under prose_only, else None
 
@@ -707,10 +731,12 @@ def main(argv=None):
             t1 = time.time()
             path = out_path(ds, cond, template)
             if cond in BANNED_FROM_START:
-                if not fence_ids:
-                    print(f"   WARNING: tokenizer exposes no vocab, the backtick ban is empty under {cond}", flush=True)
-                arm_bias["logit_bias"] = {i: FENCE_BAN_BIAS for i in fence_ids}
-                print(f"   {cond}: {len(fence_ids)} backtick tokens banned", flush=True)
+                ban_ids = code_ids if cond == "no_code" else fence_ids
+                if not ban_ids:
+                    print(f"   WARNING: tokenizer exposes no vocab, the ban is empty under {cond}", flush=True)
+                arm_bias["logit_bias"] = {i: FENCE_BAN_BIAS for i in ban_ids}
+                what = "backtick + program-keyword" if cond == "no_code" else "backtick"
+                print(f"   {cond}: {len(ban_ids)} {what} tokens banned", flush=True)
             else:
                 arm_bias["logit_bias"] = None
             if force(cond):

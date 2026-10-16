@@ -275,29 +275,26 @@ def test_verltool_template_and_boxed_grading():
     rec = gen.to_record(s, dict(id="x", answer="2"), "prompt_off", "t", "m", "base", grade)
     assert rec["correct"] and rec["correct_boxed"]
 
-def test_no_code_cuts_unfenced_program_and_keeps_ban():
-    a = args(max_calls=4)
-    calls = []
+def test_code_token_ids_bans_program_tokens_only():
+    vocab = {"`": 0, " ```": 1, "Ġimport": 2, "import": 3, "important": 4, "importância": 5, "print": 6, "Ġprint(": 7,
+             "#": 8, "###": 9, "Ġ==": 10, "=": 11, "lambda": 12, "Ġdef": 13, "Ġnp": 14, "Ġrange": 15, "Ġsympy": 16,
+             "Ġfor": 17, "Ġreturn": 18, "Ġ//": 19, "Ġ+=": 20, "elif": 21, "Ġitertools": 22, "Ġnumpy": 23, "Ġsymp": 24}
 
-    def generate(prompts, stops, budgets, seeds=None, biases=None):
-        calls.append((stops, biases))
-        outs = []
-        for p in prompts:
-            if p.count(gen.REDIRECT_TEXT) == 1:
-                outs.append(("Again:\n\\text{import", 4, "stop", "\\text{import"))   # code wrapped in LaTeX; vLLM ends at the stop
-            else:
-                outs.append(("12 * 13 = 156, so \\boxed{156}<|im_end|>", 8, "stop", "<|im_end|>"))
-        return outs
+    class Tok:
+        def get_vocab(self):
+            return vocab
 
-    s = gen.Sample(0, 0, "P")
-    gen.advance(s, "Let's write Python code.\nimport ", 6, "stop", "\nimport ", "no_code", a.max_calls)
-    assert s.gen == "Let's write Python code.\n" + gen.REDIRECT_TEXT and s.n_calls == 1
-    pool = ThreadPoolExecutor(max_workers=1)
-    gen.run_tool_loop(generate, lambda t: len(t.split()), [s], "no_code", a, pool, fence_bias={7: -100.0})
-    pool.shutdown()
-    assert s.n_calls == 2 and "import" not in s.gen and gen.last_boxed(s.gen) == "156"
-    assert all(st == gen.TEXT_STOPS + list(gen.UNFENCED_CODE_STOPS) and bi == [{7: -100.0}] for st, bi in calls)
+        def convert_tokens_to_string(self, toks):
+            return "".join(toks).replace("Ġ", " ")
+
+    ids = gen.code_token_ids(Tok())
+    banned = {k for k, i in vocab.items() if i in ids}
+    assert banned == {"`", " ```", "Ġimport", "import", "print", "Ġprint(", "#", "Ġ==", "Ġsympy", "Ġ//", "Ġ+=", "elif",
+                      "Ġitertools", "Ġnumpy", "Ġsymp"}
+    # math prose must stay writable: \lambda, digits named "def", np (binomial mean), range, for, return, ###
+    assert not banned & {"important", "importância", "###", "=", "lambda", "Ġdef", "Ġnp", "Ġrange", "Ġfor", "Ġreturn"}
     assert "no_code" in gen.CONDITIONS and "no_code" not in gen.SHARED_PROMPT_CONDITIONS
+    assert "no_code" not in gen.REDIRECT_STOPS        # nothing is inserted under no_code
 
 if __name__ == "__main__":
     fails = 0

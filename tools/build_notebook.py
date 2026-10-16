@@ -61,7 +61,7 @@ each condition is read as its own three-way comparison.
 | `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial message injected, nothing runs |
 | `env_denied` | the model's tool prompt (asks for code) | intercepted, denial message injected, nothing runs |
 | `tool_on` | the model's tool prompt | executed with `python -I`, 4-call budget, then the budget message |
-| `no_code` | the model's tool prompt | cannot happen: every backtick token is banned, and the start of an unfenced program (`import`, `def`, `print(`, a bare `python` line) is cut and replaced by "Let me do this computation by hand instead". The ability test. |
+| `no_code` | the model's tool prompt | cannot be written: a logit ban on every backtick token and on the program-only keywords `print`, `import`, `elif`, `sympy`, `numpy`, `itertools`, `==`, `+=`, `-=`, `*=`, `/=`, `!=`, `//`, `#`. Nothing is inserted. The ability test. |
 | `prose_redirect` | shared no-code prompt | the fence opener is cut and "Let me do this computation by hand instead" is spliced in; after 4 redirects the backtick ban takes over |
 | `assist_denied` | the model's tool prompt | intercepted; the denial says no output exists, do not assume one, compute by hand step by step |
 | `prose_only` | shared no-code prompt plus a logit ban on every backtick token | nothing can open; kept for the record: ToRL and base answer the ban with unfenced Python and loop |

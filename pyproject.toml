@@ -11,7 +11,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["nbformat"]                                     # tools/build_notebook.py
+dev = [
+    "nbformat",
+    "tokenizers>=0.23.3",
+]                                     # tools/build_notebook.py
 gpu = ["vllm>=0.10", "datasets>=3.0", "hf_transfer"]   # generation; the Colab notebook installs these itself
 
 [tool.uv]

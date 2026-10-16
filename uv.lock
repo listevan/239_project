@@ -6399,6 +6399,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "nbformat" },
+    { name = "tokenizers" },
 ]
 gpu = [
     { name = "datasets" },
@@ -6415,7 +6416,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "nbformat" }]
+dev = [
+    { name = "nbformat" },
+    { name = "tokenizers", specifier = ">=0.23.3" },
+]
 gpu = [
     { name = "datasets", specifier = ">=3.0" },
     { name = "hf-transfer" },
