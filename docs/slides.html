@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tool atrophy or internalization?</title>
+<title>Tool atrophy pilot: first results</title>
 <style>
   :root {
     --bg: #f7f5f0;
@@ -140,6 +140,19 @@
     .grid { grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
     .grid > div { padding: 0.4em 0.2em; font-size: 13px; }
   }
+
+  .stats3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3vw; margin: 0.6em 0 1.2em; }
+  .chart { margin: 0.1em 0 0.2em; }
+  .chart svg { display: block; width: 100%; height: auto; max-height: 52vh; }
+  .chart svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif !important; }
+  .slide.accent { background: var(--accent); color: #fbf8f3; }
+  .slide.accent .kicker, .slide.accent .note { color: #fbeee6; }
+  .slide.accent .card { background: rgba(255, 253, 249, 0.1); border-color: rgba(251, 238, 230, 0.45); }
+  .slide.accent .card .label { color: #fbeee6; }
+  .quote.mono-q { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-style: normal; }
+  @media (max-width: 700px) { .stats3 { grid-template-columns: 1fr; } }
+  body.on-accent .hint, body.on-accent .counter { color: #fbeee6; }
+  body.on-accent .progress { background: #fbeee6; }
 </style>
 </head>
 <body>
@@ -148,304 +161,409 @@
 
   <!-- 1 title -->
   <section class="slide active">
-    <div class="kicker">Pilot study</div>
-    <h1>Tool atrophy or internalization?</h1>
-    <p class="lead">When a model is RL-trained to use a tool, does it lose the skill the tool replaces, or learn it?</p>
-    <p class="footer">Steven Li &middot; October 2026</p>
+    <div class="kicker">CS 239 pilot &middot; first results</div>
+    <h1>Does tool RL make a model worse without the tool?</h1>
+    <p class="lead">1.5B math models on AIME: what happens when ToRL loses its Python interpreter.</p>
+    <p class="footer">Steven Li &middot; October 15, 2026</p>
   </section>
 
-  <!-- 2 question -->
+  <!-- 2 design -->
   <section class="slide">
-    <div class="kicker">The question</div>
-    <h2>Train a math model to call a code interpreter. Then take the interpreter away.</h2>
-    <div class="cols">
-      <div class="card">
-        <div class="label">Atrophy</div>
-        <p>It offloaded arithmetic to the tool and can no longer do it alone.</p>
-      </div>
-      <div class="card green">
-        <div class="label">Internalization</div>
-        <p>It absorbed what the tool taught it and is better without it than before.</p>
-      </div>
+    <div class="kicker">Setup</div>
+    <h2>One base model, three checkpoints</h2>
+    <div class="flow">
+      <div class="box">Base<small>Qwen2.5-Math-1.5B, no RL</small></div>
+      <div class="box">Text RL<small>Oat-Zero: RL on math, no tool. The control.</small></div>
+      <div class="box accent">Tool RL<small>ToRL: RL with a Python interpreter</small></div>
     </div>
+    <p class="note">Tool RL minus text RL separates what the tool did from what RL does on its own. All three checkpoints are public; nothing is trained in the pilot.</p>
   </section>
 
-  <!-- 3 why care -->
+  <!-- 3 conditions -->
   <section class="slide">
-    <div class="kicker">Why it matters</div>
-    <h2>Tool-using agents are now trained with RL everywhere</h2>
-    <ul>
-      <li>Code interpreters, search, shells: the tool sits inside the training loop, and the model is rewarded only for the outcome.</li>
-      <li>If a skill is offloaded to the tool, the model stops practicing it. Use it or lose it.</li>
-      <li>Tools fail, get rate-limited, or are missing at deployment. What is left of the model then?</li>
-      <li>Nobody has measured this with a proper control.</li>
-    </ul>
+    <div class="kicker">Setup</div>
+    <h2>Four ways to run each model</h2>
+    <table>
+      <tr><th>Condition</th><th>Prompt</th><th>When the model writes code</th></tr>
+      <tr><td>With the tool</td><td>its own tool prompt</td><td>the code runs, up to 4 calls</td></tr>
+      <tr><td class="hl">Tool denied</td><td>its own tool prompt</td><td>intercepted; reply: &ldquo;No interpreter is available&rdquo;</td></tr>
+      <tr><td>Told not to code</td><td>shared no-code prompt</td><td>intercepted, same reply</td></tr>
+      <tr><td>Code banned</td><td>shared no-code prompt</td><td>backtick tokens blocked while decoding</td></tr>
+    </table>
+    <p class="note">AIME 2024 and 2025: 60 problems &times; 64 samples per model and condition, temperature 0.6, 3,000 tokens. pass@k, with a paired bootstrap over problems for every difference.</p>
   </section>
 
-  <!-- 4 hook -->
+  <!-- 4 the tool matters -->
   <section class="slide">
-    <div class="kicker">The hook: one published figure</div>
-    <h2>A tool-RL model with the tool off, versus its base</h2>
+    <div class="kicker">Result 1</div>
+    <h2>On AIME the interpreter is worth about 15 points to ToRL</h2>
     <div class="stats">
       <div class="stat">
-        <div class="big up">0.10 <small>vs 0.07</small></div>
-        <div class="cap">pass@1 on AIME24. Better at low k.</div>
+        <div class="big down">9.7% <small>vs 24.3%</small></div>
+        <div class="cap">pass@1, tool denied vs with the tool</div>
       </div>
       <div class="stat">
-        <div class="big down">0.37 <small>vs 0.45</small></div>
-        <div class="cap">pass@1024 on OlymMATH-Hard. Worse at high k.</div>
+        <div class="big down">41.7% <small>vs 61.7%</small></div>
+        <div class="cap">pass@64, tool denied vs with the tool</div>
       </div>
     </div>
-    <p class="muted">Sharper on the first try, less coverage with many tries. The curves cross near k = 128.</p>
-    <p class="note">CIR, arXiv 2505.24480, Fig. 6, Qwen2.5-Math-7B.</p>
+    <p class="muted">So AIME can test atrophy. On MATH-500 the same gap was only a few points, which is why the pilot moved to AIME.</p>
   </section>
 
-  <!-- 5 gaps -->
+  <!-- 5 headline chart -->
   <section class="slide">
-    <div class="kicker">What the hook leaves open</div>
-    <h2>One figure, four gaps</h2>
-    <ul>
-      <li><strong>One size.</strong> 7B only. No idea how the crossover moves with scale.</li>
-      <li><strong>No text-RL curve.</strong> Is the high-k loss from the tool, or from RL itself?</li>
-      <li><strong>Mechanism unstated.</strong> How was the tool removed from a model that writes code in nearly every response? Only 1 of 7 prior papers says.</li>
-      <li><strong>Not interpreted.</strong> The authors read it as a capability-boundary story. Nobody has named the crossover as a cost.</li>
-    </ul>
+    <div class="kicker">Result 2</div>
+    <h2>ToRL leads with the tool and trails the control without it</h2>
+    <div class="chart">
+<svg role="img" aria-label="Grouped bar chart of pass@1 for ToRL, Oat-Zero and the base model in four conditions: with the tool, tool denied, told not to code, code banned." xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1008 388.8" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-15T17:59:38.577113</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 388.8 
+L 1008 388.8 
+L 1008 0 
+L 0 0 
+z
+" style="fill: #f7f5f0"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 101.04 334.12 
+L 985.32 334.12 
+L 985.32 56.8944 
+L 101.04 56.8944 
+z
+" style="fill: #f7f5f0"/>
+   </g>
+   <g id="line2d_1">
+    <path d="M 329.833156 334.12 
+L 329.833156 56.8944 
+" clip-path="url(#pe581d9e04e)" style="fill: none; stroke-dasharray: 4,4; stroke-dashoffset: 0; stroke: #a9a397"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_2"/>
+     <g id="text_1">
+      <text style="font-size: 24px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="223.159734" y="360.35625" transform="rotate(-0 223.159734 360.35625)">With the tool</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_3"/>
+     <g id="text_2">
+      <text style="font-size: 24px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="436.506578" y="360.35625" transform="rotate(-0 436.506578 360.35625)">Tool denied</text>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_4"/>
+     <g id="text_3">
+      <text style="font-size: 24px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="649.853422" y="360.35625" transform="rotate(-0 649.853422 360.35625)">Told not to code</text>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_5"/>
+     <g id="text_4">
+      <text style="font-size: 24px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="863.200266" y="360.35625" transform="rotate(-0 863.200266 360.35625)">Code banned</text>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_6">
+      <path d="M 101.04 334.12 
+L 985.32 334.12 
+" clip-path="url(#pe581d9e04e)" style="fill: none; stroke: #e2ddd2; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_7"/>
+     <g id="text_5">
+      <text style="font-size: 20px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #6d6a63" x="93.04" y="341.717656" transform="rotate(-0 93.04 341.717656)">0%</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_8">
+      <path d="M 101.04 235.110857 
+L 985.32 235.110857 
+" clip-path="url(#pe581d9e04e)" style="fill: none; stroke: #e2ddd2; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_9"/>
+     <g id="text_6">
+      <text style="font-size: 20px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #6d6a63" x="93.04" y="242.708513" transform="rotate(-0 93.04 242.708513)">10%</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_10">
+      <path d="M 101.04 136.101714 
+L 985.32 136.101714 
+" clip-path="url(#pe581d9e04e)" style="fill: none; stroke: #e2ddd2; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_11"/>
+     <g id="text_7">
+      <text style="font-size: 20px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #6d6a63" x="93.04" y="143.699371" transform="rotate(-0 93.04 143.699371)">20%</text>
+     </g>
+    </g>
+    <g id="text_8">
+     <text style="font-size: 21px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #6d6a63" x="39.541953" y="195.5072" transform="rotate(-90 39.541953 195.5072)">pass@1</text>
+    </g>
+   </g>
+   <g id="patch_3">
+    <path d="M 141.234545 334.12 
+L 194.144563 334.12 
+L 194.144563 93.81656 
+L 141.234545 93.81656 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #eb6834"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 354.58139 334.12 
+L 407.491407 334.12 
+L 407.491407 237.68922 
+L 354.58139 237.68922 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #eb6834"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 567.928234 334.12 
+L 620.838251 334.12 
+L 620.838251 238.204893 
+L 567.928234 238.204893 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #eb6834"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 781.275078 334.12 
+L 834.185096 334.12 
+L 834.185096 298.022917 
+L 781.275078 298.022917 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #eb6834"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 196.704725 334.12 
+L 249.614742 334.12 
+L 249.614742 144.352476 
+L 196.704725 144.352476 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #1baf7a"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 410.051569 334.12 
+L 462.961587 334.12 
+L 462.961587 189.215994 
+L 410.051569 189.215994 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #1baf7a"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 623.398413 334.12 
+L 676.308431 334.12 
+L 676.308431 199.529446 
+L 623.398413 199.529446 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #1baf7a"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 836.745258 334.12 
+L 889.655275 334.12 
+L 889.655275 209.327226 
+L 836.745258 209.327226 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #1baf7a"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 252.174904 334.12 
+L 305.084922 334.12 
+L 305.084922 232.274658 
+L 252.174904 232.274658 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 465.521749 334.12 
+L 518.431766 334.12 
+L 518.431766 285.131101 
+L 465.521749 285.131101 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 678.868593 334.12 
+L 731.77861 334.12 
+L 731.77861 262.441506 
+L 678.868593 262.441506 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 892.215437 334.12 
+L 945.125455 334.12 
+L 945.125455 296.475899 
+L 892.215437 296.475899 
+z
+" clip-path="url(#pe581d9e04e)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_15">
+    <path d="M 101.04 334.12 
+L 985.32 334.12 
+" style="fill: none; stroke: #a9a397; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 19px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #6d6a63" x="329.833156" y="39.648506" transform="rotate(-0 329.833156 39.648506)">  tool off →</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="167.689554" y="84.571038" transform="rotate(-0 167.689554 84.571038)">24.3</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="381.036398" y="228.443698" transform="rotate(-0 381.036398 228.443698)">9.7</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="594.383243" y="228.959371" transform="rotate(-0 594.383243 228.959371)">9.7</text>
+   </g>
+   <g id="text_13">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="807.730087" y="288.777395" transform="rotate(-0 807.730087 288.777395)">3.6</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="223.159734" y="135.106954" transform="rotate(-0 223.159734 135.106954)">19.2</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="436.506578" y="179.970472" transform="rotate(-0 436.506578 179.970472)">14.6</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="649.853422" y="190.283924" transform="rotate(-0 649.853422 190.283924)">13.6</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 22px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #1c1b19" x="863.200266" y="200.081704" transform="rotate(-0 863.200266 200.081704)">12.6</text>
+   </g>
+   <g id="legend_1">
+    <g id="patch_16">
+     <path d="M 393.175781 66.800815 
+L 416.275781 66.800815 
+L 416.275781 52.100815 
+L 393.175781 52.100815 
+z
+" style="fill: #eb6834"/>
+    </g>
+    <g id="text_18">
+     <text style="font-size: 21px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #1c1b19" x="433.075781" y="66.800815" transform="rotate(-0 433.075781 66.800815)">ToRL (tool RL)</text>
+    </g>
+    <g id="patch_17">
+     <path d="M 610.870313 66.800815 
+L 633.970313 66.800815 
+L 633.970313 52.100815 
+L 610.870313 52.100815 
+z
+" style="fill: #1baf7a"/>
+    </g>
+    <g id="text_19">
+     <text style="font-size: 21px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #1c1b19" x="650.770313" y="66.800815" transform="rotate(-0 650.770313 66.800815)">Oat-Zero (text RL)</text>
+    </g>
+    <g id="patch_18">
+     <path d="M 875.381719 66.800815 
+L 898.481719 66.800815 
+L 898.481719 52.100815 
+L 875.381719 52.100815 
+z
+" style="fill: #2a78d6"/>
+    </g>
+    <g id="text_20">
+     <text style="font-size: 21px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #1c1b19" x="915.281719" y="66.800815" transform="rotate(-0 915.281719 66.800815)">Base</text>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pe581d9e04e">
+   <rect x="101.04" y="56.8944" width="884.28" height="277.2256"/>
+  </clipPath>
+ </defs>
+</svg>
+
+    </div>
+    <p class="note">ToRL minus Oat-Zero, pass@1: +5.1 points with the tool [+0.3, +10.3]; &minus;4.9 denied [&minus;8.7, &minus;1.8]; &minus;3.9 told not to code [&minus;7.4, &minus;1.0]. Same direction at pass@64: +13.3 with the tool, &minus;6.7 denied (interval crosses zero).</p>
   </section>
 
-  <!-- 6 scattered evidence -->
+  <!-- 6 not arithmetic -->
   <section class="slide">
-    <div class="kicker">Prior evidence</div>
-    <h2>Hints in other papers' side tables</h2>
-    <ul>
-      <li><strong>Trice, tool-only SFT.</strong> BeyondAIME drops from 54.3 to 34.1 at 4B. Mixed tool and text data: 49.0. Atrophy is real and data-mix driven.</li>
-      <li><strong>Trice, after RL.</strong> Tool-off beats base on 4 of 5 benchmarks, by more at 30B. Internalization at scale.</li>
-      <li><strong>Tool-Overuse Illusion.</strong> ReTool-32B makes 3.1 calls per easy GSM8K problem; 7B makes 1.2. Bigger models offload more.</li>
-      <li><strong>Invisible Leash.</strong> Text-RL keeps 93% of base coverage at 1.5B and 99% at 14B.</li>
-    </ul>
-    <p class="note">None of them puts tool-RL, text-RL and base on the same pass@k axis.</p>
-  </section>
-
-  <!-- 7 hypotheses -->
-  <section class="slide">
-    <div class="kicker">Hypotheses</div>
-    <h2>Three stories, three signatures</h2>
-    <div class="cols3">
-      <div class="card">
-        <div class="label">Atrophy</div>
-        <p>Tool-RL below text-RL at high k. More arithmetic errors than base.</p>
+    <div class="kicker">Why: ability</div>
+    <h2>It is not worse arithmetic</h2>
+    <p class="muted">Wrong arithmetic steps, checked by hand in 120 trajectories with the tool denied</p>
+    <div class="stats3">
+      <div class="stat">
+        <div class="big">5.8%</div>
+        <div class="cap">ToRL, 11 of 190 steps</div>
       </div>
-      <div class="card green">
-        <div class="label">Internalization</div>
-        <p>Tool-RL above base at every k. Fewer arithmetic errors.</p>
+      <div class="stat">
+        <div class="big">8.2%</div>
+        <div class="cap">Oat-Zero, 21 of 256 steps</div>
       </div>
-      <div class="card gray">
-        <div class="label">Null</div>
-        <p>Tool-RL and text-RL match within CI everywhere. The tool changed nothing.</p>
+      <div class="stat">
+        <div class="big">12.4%</div>
+        <div class="cap">Base, 30 of 242 steps</div>
       </div>
     </div>
+    <p class="note">An arithmetic slip explains 1 of 36 wrong ToRL answers in that sample. Small sample: a 5-point difference either way cannot be ruled out.</p>
   </section>
 
-  <!-- 8 design -->
+  <!-- 7 behaviour -->
   <section class="slide">
-    <div class="kicker">Design</div>
-    <h2>One base model, three checkpoints, all evaluated tool-free</h2>
-    <div class="flow">
-      <div class="box">Base<small>no RL</small></div>
-      <div class="box">Text-only RL<small>the control</small></div>
-      <div class="box accent">Tool RL<small>the treatment</small></div>
+    <div class="kicker">Why: behaviour</div>
+    <h2>It reaches for code, then invents the output</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="big down">93% <small>vs 34%</small></div>
+        <div class="cap">of samples write code with the tool denied, ToRL vs Oat-Zero</div>
+      </div>
+      <div class="stat">
+        <div class="big down">31 <small>of 60</small></div>
+        <div class="cap">wrong ToRL answers give up or assert a result after the denial (Oat-Zero: 17)</div>
+      </div>
     </div>
-    <div class="bar">evaluate every one with the tool switched off</div>
-    <p class="note">Measure pass@k curves up to k = 64, plus the rate of wrong arithmetic steps in the written solution. No training in the pilot: every checkpoint is public.</p>
+    <p class="quote mono-q">&ldquo;Given that the code is correctly implemented and the logic is sound, we can conclude &hellip; The final answer is 600.&rdquo; The code never ran; the answer is 610.</p>
+    <p class="note">5 of the 8 problems ToRL solves only with the tool are brute-force enumerations that no model solves by hand: no skill there to lose.</p>
   </section>
 
-  <!-- 9 the control -->
+  <!-- 8 ban backfires -->
   <section class="slide">
-    <div class="kicker">The control</div>
-    <h2>Why text-only RL is the key arm</h2>
-    <ul>
-      <li>Same base, same kind of zero-RL on math, no tool in the loop.</li>
-      <li>Whatever RL does on its own, sharper answers or lost coverage, shows up here too.</li>
-      <li>Tool-RL minus text-RL is the tool's effect. Tool-RL minus base mixes the two.</li>
-      <li>Oat-Zero is exactly this for Qwen2.5-Math-1.5B: zero-RL from the same base, 288 steps, no tool.</li>
-    </ul>
-  </section>
-
-  <!-- 10 checkpoints -->
-  <section class="slide">
-    <div class="kicker">Checkpoints</div>
-    <h2>One trio at 1.5B, all public on Hugging Face</h2>
+    <div class="kicker">Result 3</div>
+    <h2>Banning code does not force hand computation</h2>
     <table>
-      <tr><th>Arm</th><th>Model</th><th>Recipe</th></tr>
-      <tr><td>Base</td><td>Qwen2.5-Math-1.5B</td><td>No RL.</td></tr>
-      <tr><td>Text-only RL</td><td>Oat-Zero 1.5B</td><td>Dr.GRPO on math, 288 steps, no tool.</td></tr>
-      <tr><td class="hl">Tool RL</td><td class="hl">ToRL-1.5B</td><td>Zero-RL with a code interpreter in the loop.</td></tr>
+      <tr><th>Code banned</th><th>pass@1</th><th>Truncated</th><th>Unfenced code</th></tr>
+      <tr><td class="hl">ToRL</td><td class="hl">3.6%</td><td>69%</td><td>78%</td></tr>
+      <tr><td>Oat-Zero</td><td>12.6%</td><td>16%</td><td>26%</td></tr>
+      <tr><td>Base</td><td>3.8%</td><td>69%</td><td>60%</td></tr>
     </table>
-    <p class="note">The 7B trio (CIR, the Fig. 6 model) is out of the pilot: 10 to 12 A100 hours for the grid versus 3 to 4 at 1.5B. The 1.5B family also has per-step checkpoints for dose-response later.</p>
+    <p class="note">With the backtick blocked, ToRL writes Python without the fence and repeats it until the budget runs out: 99% of its truncated samples end in a repeated tail. The ban measures that loop, not ability.</p>
   </section>
 
-  <!-- 11 two tool-off conditions -->
-  <section class="slide">
-    <div class="kicker">Two ways to switch the tool off</div>
-    <h2>Lost ability, or just the wrong prompt?</h2>
+  <!-- 9 takeaway -->
+  <section class="slide accent">
+    <div class="kicker">So far</div>
+    <h2>Tool dependence, not lost skill</h2>
     <div class="cols">
       <div class="card">
-        <div class="label">A. Prompt off</div>
-        <p>Shared no-code prompt, identical for every model. Any code it writes anyway is intercepted, never run.</p>
+        <div class="label">What we found</div>
+        <p>With the tool ToRL is the strongest of the three. Without it, it trails the RL control in every tool-off condition. Its arithmetic is fine: it delegates almost every computation and, when the tool is gone, often asserts the answer instead of working it out.</p>
       </div>
       <div class="card">
-        <div class="label">B. Env denied</div>
-        <p>The model's own tool prompt. It writes code, is told it was not executed, and must keep reasoning.</p>
+        <div class="label">Next</div>
+        <p>Redirect the model into hand computation the moment it opens a code block, and a denial that asks for hand computation. Then a better arithmetic checker, more hard problems, and the 7B CIR model.</p>
       </div>
     </div>
-    <p class="quote">"No interpreter is available; the code was not executed. Continue reasoning without running code and give the final answer."</p>
-    <p class="note">An effect under A but not B is prompt mismatch, not atrophy. Both are reported.</p>
-  </section>
-
-  <!-- 12 full grid -->
-  <section class="slide">
-    <div class="kicker">The full grid</div>
-    <h2>Every model under every condition</h2>
-    <div class="grid">
-      <div></div><div class="h">Prompt off</div><div class="h">Env denied</div><div class="h">Tool on</div>
-      <div class="r">Base</div><div class="c ctl">&nbsp;</div><div class="c ctl">&nbsp;</div><div class="c">&nbsp;</div>
-      <div class="r">Text-only RL</div><div class="c ctl">&nbsp;</div><div class="c ctl">&nbsp;</div><div class="c">&nbsp;</div>
-      <div class="r">Tool RL</div><div class="c on">headline</div><div class="c on">headline</div><div class="c">&nbsp;</div>
-    </div>
-    <p class="note">Tool-on for base and text-RL shows how much a model never trained on the tool gains from it. Nothing is ever fabricated: with the tool off, every code block gets the denial message.</p>
-  </section>
-
-  <!-- 13 pass@k -->
-  <section class="slide">
-    <div class="kicker">Metric 1</div>
-    <h2>pass@k: sharpness at low k, coverage at high k</h2>
-    <ul>
-      <li>n samples per problem, 16 or 64. Unbiased estimator for every k up to n.</li>
-      <li>Paired bootstrap over problems for the difference between two arms. A CI that excludes zero is a finding.</li>
-      <li>pass@1 asks "is it sharper". pass@64 asks "can it still reach the answer at all".</li>
-    </ul>
-    <div class="mono">pass@k = E over problems [ 1 &minus; C(n&minus;c, k) / C(n, k) ]</div>
-  </section>
-
-  <!-- 14 arithmetic error rate -->
-  <section class="slide">
-    <div class="kicker">Metric 2</div>
-    <h2>Does the model still do arithmetic right?</h2>
-    <ul>
-      <li>Scan each chain of thought for chains like 7<sup>4</sup> + 5&middot;7<sup>3</sup> = 2401 + 1715 = 4116, LaTeX included.</li>
-      <li>Check every step exactly with rational arithmetic. No floats, no eval.</li>
-      <li>Report wrong over checked, plus coverage. Split by whether the final answer was right.</li>
-      <li>Also tracked: truncation rate, missing-answer rate, and code emission with the tool off.</li>
-    </ul>
-  </section>
-
-  <!-- 15 benchmarks -->
-  <section class="slide">
-    <div class="kicker">Benchmarks and decoding</div>
-    <h2>Three datasets, one decoding setting</h2>
-    <table>
-      <tr><th>Dataset</th><th>Samples</th><th>Why</th></tr>
-      <tr><td>MATH-500</td><td>16 per problem</td><td>Compliance and format. Level-5 subset reported on its own.</td></tr>
-      <tr><td>AIME 24 and 25</td><td>64 per problem</td><td>The hard end, where the crossover should show.</td></tr>
-      <tr><td>GSM-Hard, 300 problems</td><td>16 per problem</td><td>GSM8K with huge numbers. The interpreter is load-bearing.</td></tr>
-    </table>
-    <p class="note">Temperature 0.6, top-p 0.95, 3000 output tokens, at most 4 tool calls. Same for every arm, matching CIR Fig. 6.</p>
-  </section>
-
-  <!-- 16 pipeline -->
-  <section class="slide">
-    <div class="kicker">Pipeline</div>
-    <h2>Generate on Colab, analyze on the laptop</h2>
-    <ul>
-      <li><strong>Sampler.</strong> vLLM with the tool loop. One model load serves all datasets. Writes JSONL plus metadata.</li>
-      <li><strong>Resumable.</strong> Chunks checkpointed to Drive. Finished arms are skipped on re-run.</li>
-      <li><strong>Analysis.</strong> math-verify grading, pass@k, bootstrap CIs, dated figures and tables, one folder per run.</li>
-      <li><strong>Tests.</strong> The tool loop, executor and grader are unit-tested without a GPU.</li>
-    </ul>
-  </section>
-
-  <!-- 17 reading the result -->
-  <section class="slide">
-    <div class="kicker">Reading the result</div>
-    <h2>Three outcomes, each with a decision</h2>
-    <ul>
-      <li><strong>Atrophy.</strong> Tool-RL falls below text-RL at high k, or makes more arithmetic errors than base while text-RL does not. Go.</li>
-      <li><strong>Internalization.</strong> Tool-RL beats base at every k with fewer arithmetic errors. Go.</li>
-      <li><strong>Kill.</strong> Tool-RL and text-RL match within bootstrap CIs everywhere. Stop.</li>
-    </ul>
-    <p class="note">Either positive answer is a result. The kill criterion is written down before the first run.</p>
-  </section>
-
-  <!-- 18 staged plan -->
-  <section class="slide">
-    <div class="kicker">Staged plan</div>
-    <h2>Six stages, each gated on the one before</h2>
-    <table class="compact">
-      <tr><th>Stage</th><th>What</th><th>Status</th></tr>
-      <tr><td>0. Harness</td><td>Sampler with the tool loop, 3&times;3 grid, analysis, Colab notebook, tests, resumable runs.</td><td class="hl">done</td></tr>
-      <tr><td>1. Smoke</td><td>Every arm on 20 MATH-500 and 10 GSM-Hard problems, 4 samples each. About 5 minutes. Checks prompts, compliance, resume.</td><td class="hl">next</td></tr>
-      <tr><td>2. Full grid</td><td>MATH-500 &times;16, AIME 24 and 25 &times;64, GSM-Hard 300 &times;16. 3 to 4 A100 hours. Grade and verdict on the laptop.</td><td>this week</td></tr>
-      <tr><td>3. Decide</td><td>Atrophy, internalization, or kill. A kill is written up as the negative result.</td><td>next week</td></tr>
-      <tr><td>4. Dose-response</td><td>ToRL 1.5B step checkpoints (140 to 650) against the per-step text-RL series (steps 1 to 499).</td><td>weeks 3 to 4</td></tr>
-      <tr><td>5. Stretch</td><td>7B with CIR, the Fig. 6 model itself. Or the fix: tool-free rollouts mixed into tool RL.</td><td>if time</td></tr>
-    </table>
-  </section>
-
-  <!-- 19 beyond math -->
-  <section class="slide">
-    <div class="kicker">Beyond math</div>
-    <h2>The same question in two other domains</h2>
-    <div class="cols">
-      <div class="card">
-        <div class="label">Search</div>
-        <p>Search-R1 vs its R1 twin: same author, data, algorithm, 3B and 7B. Closed-book QA with retrieval off. The cleanest control anywhere.</p>
-      </div>
-      <div class="card">
-        <div class="label">Coding agents</div>
-        <p>DeepSWE and SWE-Master vs base. CRUXEval-O, predicting code output without running it, is the arithmetic analog. 32B inference, no step checkpoints.</p>
-      </div>
-    </div>
-    <p class="note">Math first: the hook is published, the controls exist, and it is the cheapest.</p>
-  </section>
-
-  <!-- 20 issues: harness -->
-  <section class="slide">
-    <div class="kicker">Issues so far: the harness</div>
-    <h2>Most of the week went into making Colab survive a run</h2>
-    <ul>
-      <li><strong>Stalls.</strong> The arithmetic checker used regex plus eval and hung on long outputs. Rewritten as a linear scan with no eval.</li>
-      <li><strong>Hung executions.</strong> Model code that called input() waited out the whole timeout. Stdin is now closed so it fails fast.</li>
-      <li><strong>Disconnects.</strong> Colab drops sessions mid-run. Runs checkpoint to Drive in chunks, resume from the last one, and skip finished arms.</li>
-      <li><strong>Drive.</strong> Mounts failed silently and the project folder was filed in different places. Now fails loudly and is found anywhere under My Drive.</li>
-      <li><strong>Stale files.</strong> Results from an older notebook version mixed into a run. They are flagged and quarantined.</li>
-      <li><strong>Grading.</strong> Too slow on Colab. Moved to the laptop with per-row timeouts.</li>
-    </ul>
-  </section>
-
-  <!-- 21 issues: method -->
-  <section class="slide">
-    <div class="kicker">Issues so far: the method</div>
-    <h2>What could still bias the answer</h2>
-    <ul>
-      <li><strong>Context.</strong> Qwen2.5-Math's native context is 4k tokens; CIR evaluated at 16k by extrapolation. We cap at 4k and report the truncation rate.</li>
-      <li><strong>Prompts.</strong> Each checkpoint was trained on its own template. ToRL's is verbatim from the paper, but prompt mismatch can masquerade as atrophy. Hence both tool-off protocols.</li>
-      <li><strong>Non-compliance.</strong> Under prompt-off, models write code anyway. It is counted, intercepted, and never executed.</li>
-      <li><strong>No sandbox.</strong> Tool-on runs model code on the Colab VM with a 10 s timeout. Fine there, not on a shared machine.</li>
-      <li><strong>Only 1.5B, only math.</strong> 7B is too expensive for the pilot, and every open tool-RL checkpoint is a math model.</li>
-    </ul>
-  </section>
-
-  <!-- 22 takeaway -->
-  <section class="slide">
-    <div class="kicker">Takeaway</div>
-    <h2>One base, three checkpoints, tool off</h2>
-    <ul>
-      <li>A published crossover nobody has explained.</li>
-      <li>A control that separates the tool's effect from RL's.</li>
-      <li>Two tool-off protocols and two metrics.</li>
-      <li>A kill criterion written down in advance.</li>
-      <li>A harness that now survives Colab. Results next.</li>
-    </ul>
-    <p class="footer">Questions?</p>
+    <p class="note">Caveats: one size (1.5B); Oat-Zero and ToRL were trained on different data; 60 problems.</p>
   </section>
 
 </div>
@@ -461,6 +579,7 @@
   function show(n) {
     i = Math.max(0, Math.min(slides.length - 1, n));
     slides.forEach((s, j) => s.classList.toggle('active', j === i));
+    document.body.classList.toggle('on-accent', slides[i].classList.contains('accent'));
     counter.textContent = (i + 1) + ' / ' + slides.length;
     progress.style.width = ((i + 1) / slides.length * 100) + '%';
     history.replaceState(null, '', '#' + (i + 1));
