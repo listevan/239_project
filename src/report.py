@@ -88,11 +88,13 @@ def outputs(df, dataset, stamp, figs_dir, tabs_dir):
     return out
 
 
-def superseded(run_dir, dataset, stamp):
-    """Output files for this dataset carrying a different stamp."""
+def superseded(run_dir, dataset, stamp, current=()):
+    """Output files for this dataset that the current report does not produce: another stamp, or the same
+    stamp under a name no longer written (e.g. figures from an older version of this script)."""
     pat = re.compile(rf"^[a-z_]+_{re.escape(dataset)}_(\d{{4}}-\d{{2}}-\d{{2}}_\d{{4}})\.(png|csv)$")
+    keep = {Path(c).name for c in current}
     return [p for sub in ("figures", "tables") for p in sorted((Path(run_dir) / sub).glob("*"))
-            if (m := pat.match(p.name)) and m.group(1) != stamp]
+            if (m := pat.match(p.name)) and (m.group(1) != stamp or (keep and p.name not in keep))]
 
 
 def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None, yes=False):
@@ -137,7 +139,7 @@ def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None, ye
             plt.close(fig)
         written = list(outs.values())
         print("written: " + ", ".join(str(p.relative_to(run_dir)) for p in written))
-    old = superseded(run_dir, dataset, stamp)
+    old = superseded(run_dir, dataset, stamp, outs.values())
     if old and confirm(f"{len(old)} older output file(s) for {dataset}; move them into old/?", yes):
         for p in old:
             (p.parent / "old").mkdir(exist_ok=True)

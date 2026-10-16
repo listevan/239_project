@@ -118,11 +118,15 @@ def test_report_end_to_end():
             time.sleep(0.05)
             stale = run / "figures" / "passk_no_code_aime_all_2020-01-01_0000.png"
             stale.write_bytes(b"x")
+            same_stamp_old_name = run / "figures" / ("passk_main_denied_aime_all_" + sorted(first)[0].rsplit("_", 2)[-2] + "_"
+                                                     + sorted(first)[0].rsplit("_", 1)[-1])
+            same_stamp_old_name.write_bytes(b"x")
             with contextlib.redirect_stdout(buf):
                 report.main(["--run", run.name, "--no-ci", "--no-grade", "--yes"])
             after = {p.name: p.stat().st_mtime_ns for p in (run / "figures").iterdir() if p.is_file()}
             assert set(after) == set(first) and all(after[k] > first[k] for k in first)
             assert (run / "figures" / "old" / stale.name).exists()
+            assert (run / "figures" / "old" / same_stamp_old_name.name).exists()   # same stamp, name no longer written
             try:
                 report.main(["--run", "nope"])
                 raise AssertionError("expected SystemExit")
