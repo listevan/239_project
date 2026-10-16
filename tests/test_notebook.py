@@ -58,7 +58,7 @@ def test_config_cell():
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
         assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "plain"],
                                               "base": ["tool_on", "env_denied", "plain"],
-                                              "tool_sft": ["tool_on", "env_denied", "no_code", "plain"], "text_rl": []}
+                                              "tool_sft": ["tool_on", "env_denied", "plain"], "text_rl": []}
         assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "tool_sft": "verltool_sft",
                                     "text_rl": "qwen_math_tir"}
         assert cfg["models"]["tool_rl"] == "GAIR/ToRL-1.5B"
