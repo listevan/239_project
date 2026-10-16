@@ -27,7 +27,9 @@ on math where the tool helps but cannot replace the reasoning.
   template base derails and loops in ~43% of samples, which RL of any kind fixes, so a
   handicapped base would hide atrophy.
 
-Pilot set: `amc24`, AMC 12 2024, 30 problems x 4 samples (pass@1 to pass@4).
+Pilot set: `math500_l5`, MATH-500 level 5 minus the 10 problems found in ToRL's training data
+(124 left), 30 sampled x 4 samples (pass@1 to pass@4). The first pilot set, `amc24` (AMC 12
+2024), left base too weak tool-free.
 
 Known limitation: Qwen2.5-Math already reasons in Python-style code without running it, and
 RL amplifies that even with random rewards (Shao et al., arXiv 2506.10947). Nearly every
@@ -41,7 +43,8 @@ Each stage runs only if the one before passes; numbers are pass@k with strict bo
    .123; AMC24 .508 vs .117). The VerlTool 360-step checkpoint failed it (.163 vs .157) and was
    dropped (docs/audit_2026-10-16.md).
 2. **Base is capable tool-free** (`plain` pass@1 about .25 or more), so a drop is measurable.
-   AMC24 v1 (chat prompt): .150, failed; rerun with the bare question.
+   AMC24: .150 with the chat prompt, .175 with the bare question (ToRL .183, a tie): failed,
+   base is too weak there. Next: MATH-500 level 5.
 3. Main comparison and scale-up only after both pass.
 
 ## Contamination check (2026-10-16)

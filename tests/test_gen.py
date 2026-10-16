@@ -128,6 +128,7 @@ def test_code_token_ids():
 
 
 def test_dataset_specs_and_loaders():
+    assert "math500_l5" in gen.DATASETS and len(gen.MATH500_L5_IN_TORL_TRAIN) == 10
     assert gen.parse_dataset_specs("aime_all::64,olymmath_easy:10", 0, 16) == [("aime_all", 0, 64), ("olymmath_easy", 10, 16)]
     assert gen.template_for("plain", "torl") == "none" and gen.template_for("env_denied", "torl") == "torl"
     assert gen.build_prompt("torl", "Q").endswith("\\boxed{}.\nQ\nAssistant:")

@@ -211,8 +211,21 @@ def _load_amc24():
     return out
 
 
+# MATH-500 level 5 problems whose text (60+ normalised characters) is in ToRL's training set
+# (GAIR-NLP/ToRL data/torl_data/train.parquet), checked 2026-10-16: 4 whole copies, 6 near copies.
+MATH500_L5_IN_TORL_TRAIN = frozenset(f"test/{p}.json" for p in (
+    "intermediate_algebra/279", "intermediate_algebra/582", "geometry/172", "prealgebra/1003", "geometry/229",
+    "intermediate_algebra/1791", "intermediate_algebra/2015", "counting_and_probability/1003",
+    "intermediate_algebra/1930", "geometry/561"))
+
+
+def _load_math500_l5():
+    """MATH-500 level 5, the hardest, minus the 10 problems in ToRL's training data: 124 problems."""
+    return [r for r in _load_math500((5,)) if r["id"] not in MATH500_L5_IN_TORL_TRAIN]
+
+
 DATASETS = {"amc24": _load_amc24, "amc23": _load_amc23, "aime_all": _load_aime_all, "olymmath_easy": _load_olymmath_easy,
-            "math500": _load_math500, "math500_l35": lambda: _load_math500((3, 4, 5))}
+            "math500": _load_math500, "math500_l35": lambda: _load_math500((3, 4, 5)), "math500_l5": _load_math500_l5}
 
 
 def parse_dataset_specs(spec: str, n_problems: int, n: int):

@@ -53,7 +53,7 @@ def test_config_cell():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = "), "config", "exec"), ns)
-        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "amc24:30:4"
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "math500_l5:30:4"
         assert ns["RUN_ID"].endswith("_torl-1.5b")
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
         assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "plain"],

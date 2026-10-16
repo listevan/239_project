@@ -46,10 +46,10 @@ checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 tool), then tool_rl vs base with the tool off (below base = atrophy), then text_rl
 `plain` for whether any gap belongs to the tool.
 
-**Pilot size:** AMC 12 2024, 30 problems x 4 samples (pass@1 to pass@4), 6 arms, about
-15 minutes. Problems where computation helps but insight is still needed, base already
-solves a fair share, and the contests (November 2024) postdate Qwen2.5-Math, so the base
-model cannot have memorised them.
+**Pilot size:** MATH-500 level 5 (the hardest level), 30 problems x 4 samples (pass@1 to
+pass@4), 6 arms, about 15 minutes. Computation helps but insight is still needed, and base
+should solve a fair share (AMC 12 2024 was too hard: base .175 tool-free). The 10 level-5
+problems found in ToRL's training data are left out.
 
 **Run:** cells 1 to 6, then the three model cells. Then on the laptop:
 `uv run src/report.py --run <run id>`.
@@ -129,9 +129,9 @@ CONDITIONS_BY_MODEL = {
     "text_rl": [],               # attribution, only needed if tool_rl lands below base: then ["plain"]
 }
 SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
-# Pilot: one set, ~30 problems, pass@1..4. AMC 12 2024: computation helps, insight is still needed, and it
-# postdates the base model.
-DATASETS = {"amc24": (6, 2)} if SMOKE else {"amc24": (30, 4)}   # (problems, samples)
+# Pilot: one set, ~30 problems, pass@1..4. MATH-500 level 5 minus ToRL's training overlap (124 problems);
+# the AMC 12 2024 pilot (amc24) left base too weak tool-free (.175).
+DATASETS = {"math500_l5": (6, 2)} if SMOKE else {"math500_l5": (30, 4)}   # (problems, samples)
 MAX_TOKENS = 1024 if SMOKE else 3000
 MAX_MODEL_LEN = 4096
 TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0
@@ -139,8 +139,8 @@ MAX_CALLS = 4
 GPU_MEM = 0.90
 CHUNK = 100                    # problems per checkpoint
 OVERWRITE = False              # False: only missing arms. True: redo all. ["no_code"]: redo those conditions only.
-RUN_ID = "2026-10-16_torl-1.5b"   # the AMC24 pilot: its 4 tool arms are done, only plain reruns. None: today's
-                                 # date + preset (a new run). An existing id resumes or extends that run.
+RUN_ID = "2026-10-16_torl-1.5b"   # same run as the AMC24 pilot; each dataset gets its own folder in it. None:
+                                 # today's date + preset (a new run). An existing id resumes or extends that run.
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}"
