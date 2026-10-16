@@ -264,6 +264,17 @@ def test_assist_denied_uses_its_own_message():
     gen.advance(s, "```python\nprint(2+2)\n```\n", 5, "stop", "```\n", "env_denied", 4, denial="custom")
     assert "custom" in s.gen and gen.DENIAL_ASSIST not in s.gen
 
+def test_verltool_template_and_boxed_grading():
+    p = gen.build_prompt("verltool_torl", "What is 1+1?")
+    assert p.startswith("<|im_start|>system\nA conversation between User and Assistant.")
+    assert "\\boxed{}.:\n<|im_end|>\n<|im_start|>user\nWhat is 1+1?<|im_end|>\n<|im_start|>assistant\n" in p
+    grade, _ = gen.make_grader()
+    assert gen.grade_boxed(grade, r"so \boxed{2}", "2") is True
+    assert gen.grade_boxed(grade, "the answer is 2", "2") is False
+    s = gen.Sample(0, 0, "P"); s.gen = r"1+1 = 2 so \boxed{2}"; s.done = True
+    rec = gen.to_record(s, dict(id="x", answer="2"), "prompt_off", "t", "m", "base", grade)
+    assert rec["correct"] and rec["correct_boxed"]
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

@@ -34,13 +34,15 @@ def _grade_one(text, gold):
     grade, _ = _GRADER
     t = time.time()
     correct = bool(grade(text, gold))
+    correct_boxed = gen.grade_boxed(grade, text, gold)
     a_n, a_wrong, _ = arith_check.check(gen.strip_fenced(text))
-    return correct, a_n, a_wrong, time.time() - t
+    return correct, a_n, a_wrong, time.time() - t, correct_boxed
 
 
 def _apply(r, result):
-    correct, a_n, a_wrong, secs = result
+    correct, a_n, a_wrong, secs = result[:4]
     r["correct"], r["arith_n"], r["arith_wrong"] = correct, a_n, a_wrong
+    r["correct_boxed"] = result[4] if len(result) > 4 else None
     r.pop("grade_timeout", None)
     return secs
 
@@ -73,7 +75,7 @@ def grade_records(recs, workers, timeout=60.0, regrade=False, worker=_grade_one,
                 try:
                     note(r, _apply(r, f.get(timeout=timeout)))
                 except mp.TimeoutError:
-                    r.update(correct=False, arith_n=None, arith_wrong=None, grade_timeout=True)
+                    r.update(correct=False, correct_boxed=False, arith_n=None, arith_wrong=None, grade_timeout=True)
                     n_timeout += 1
                     log(f"   TIMEOUT after {timeout:.0f}s: problem {r['problem_id']} sample {r['sample_idx']} marked incorrect")
                 if i % step == 0:

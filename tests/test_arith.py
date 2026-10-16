@@ -62,6 +62,15 @@ def test_details_format():
     assert (n, w) == (1, 1) and d == [("17 * 23", "381", "391", "381", False)]
 
 
+def test_display_math_boxed_align_semicolons_and_dedupe():
+    assert nw(r"\[ \frac{12\cdot13}{2} = 78 \]") == (1, 0)          # delimiters used to glue both ends
+    assert nw(r"\(m+n = 85+24 = 109\)") == (1, 0)
+    assert nw(r"so \(3+4 = \boxed{7}\)") == (1, 0)
+    assert nw(r"\begin{align*} 2+2 &= 4 \\ 3\cdot 3 &= 10 \end{align*}") == (2, 1)
+    assert nw("a; 3+4 = 7; b") == (1, 0)                              # semicolons are no longer deleted
+    assert nw("1+1 = 3. " * 50) == (1, 1)                              # a looping false line counts once
+    assert nw(r"\[ x = 3 \]") == (0, 0)
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

@@ -168,6 +168,19 @@ def test_file_stamp_provenance_and_dated_figure():
         assert out.stat().st_size > 1000
         assert any(cap == txt.get_text() for txt in fig.texts)
 
+def test_verdict_reports_base_first():
+    df = synth(n_problems=10, n=8)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        an.verdict(df, "env_denied", iters=50)
+    out = buf.getvalue()
+    lines = [l for l in out.splitlines() if " - " in l and "pass@" in l]
+    assert "tool_rl - base" in lines[0]
+    assert "erosion test (vs untrained base)" in out and "tool-specific test (vs text_rl)" in out
+    with contextlib.redirect_stdout(buf):
+        an.verdict(df[df.tag != "text_rl"], "env_denied", iters=50)   # base-only comparison works without a control
+    assert buf.getvalue().count("erosion test") == 2
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

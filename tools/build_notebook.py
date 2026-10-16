@@ -50,9 +50,9 @@ each condition is read as its own three-way comparison.
 **Where it goes.** One folder per run on Drive, named by date and preset:
 
 ```
-239_project/runs/2026-10-15_math-1.5b/
+239_project/runs/2026-10-16_verltool-1.5b/
     config.json          the settings of this run
-    aime24/  aime25/         one JSONL + meta per arm (more datasets if you add them)
+    aime25/  math500/        one JSONL + meta per arm (more datasets if you add them)
     figures/  tables/   written by report.py, every file dated
 ```
 
@@ -68,13 +68,13 @@ each condition is read as its own three-way comparison.
 
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
-Rough wall-clock on an A100 with vLLM for the default plan (AIME24 + AIME25 at
-64 samples, about 3.8k samples per arm, long solutions):
+Rough wall-clock on an A100 with vLLM for the default plan (AIME25 x 64 plus
+MATH-500 x 16, about 10k samples per arm, five conditions):
 
-| Preset | per model (3 arms) | whole grid |
+| Preset | per model | whole grid |
 |---|---|---|
-| math-1.5b | 20 to 30 min | about 1 h |
-| math-7b | 1 to 1.5 h | 3 to 4 h |
+| 1.5B presets | about 1 to 1.25 h | 3 to 4 h (AIME25 lands in the first 20 min of each model) |
+| 7B presets | 3 to 4 h | 10 to 12 h, split it over sessions |
 
 `SMOKE = True` in the config cell runs a 10-minute wiring check on 6 AIME problems
 instead of the real run; use it after changing code, not before every run.
@@ -219,6 +219,7 @@ identical tool prompt for all three.
 
 | Preset | base | text-RL (control) | tool-RL |
 |---|---|---|---|
+| `verltool-1.5b` (default) | Qwen/Qwen2.5-Math-1.5B | VerlTool ToRL recipe, no interpreter, 430 steps | VerlTool ToRL recipe, interpreter, 360 steps |
 | `math-1.5b` | Qwen/Qwen2.5-Math-1.5B | sail/Qwen2.5-Math-1.5B-Oat-Zero | GAIR/ToRL-1.5B |
 | `math-7b` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | RUC-AIBOX/Qwen-Math-7B-CIR (the Fig. 6 model) |
 | `math-7b-torl` | Qwen/Qwen2.5-Math-7B | sail/Qwen2.5-Math-7B-Oat-Zero | GAIR/ToRL-7B |
@@ -232,13 +233,24 @@ base model's and Oat-Zero's native context (CIR evaluated at 16k by extrapolatin
 numbers. `DENIAL_TEXT` overrides the message injected under `prompt_off` and
 `env_denied`.
 
+**Why `verltool-1.5b` is the default.** ToRL vs Oat-Zero differ in training data
+and algorithm as well as the tool, and on AIME most of their tool-off gap sat on
+problems where ToRL trailed even with the tool. VerlTool released two runs of one
+recipe (Qwen2.5-Math-1.5B, MATH train set, GRPO n16 b128 lr1e-6, one tool call,
+the same prompt) that differ only in whether the interpreter ran. Their training
+rollouts show the no-interpreter run dropping code from 79% to 36% of rollouts as
+accuracy rose, so it ends up a mostly-text RL model from the identical recipe.
+Caveat: 430 vs 360 steps. All three models get that training prompt here.
+
+**Two comparisons, base first.** `verdict` reports tool_rl vs the untrained base
+first: below base is erosion (lost what it had), and that comparison has no recipe
+confound. tool_rl vs text_rl second: the tool-specific counterfactual.
+
 **Datasets.** `DATASETS` maps a name to (problems, samples per problem); 0 problems
-means the whole set. The pilot is AIME24 plus AIME25, 60 problems at 64 samples:
-the hard end, where the interpreter should matter. The interpreter is not
-load-bearing on MATH-500 at 1.5B (the smoke run and the ToRL paper agree, a few
-points), so MATH-500 is off. GSM-Hard (GSM8K with huge numbers) and the level-5
-MATH-500 subset are one line each to add back. The gate before any verdict:
-tool_on minus env_denied for the tool-RL model must be large on the set.
+means the whole set. Default: AIME25 at 64 samples (the hard end, where the
+interpreter should matter) then MATH-500 at 16 (the compliance and format run).
+AIME24, GSM-Hard and the level-5 MATH-500 subset are one line each. The gate before
+any verdict: tool_on minus env_denied for the tool-RL model must be large on the set.
 
 **Run id.** `RUN_ID` defaults to today's date plus the preset. Re-running the config
 cell on another day makes a new run folder; to resume or extend an earlier one (a
@@ -248,6 +260,16 @@ disconnect, or adding a dataset), set `RUN_ID` to its name from the printed list
 
 CONFIG = r"""
 PRESETS = {
+    # Same recipe, interpreter on vs off: VerlTool's ToRL recipe on Qwen2.5-Math-1.5B, MATH train set,
+    # GRPO n16 b128 lr1e-6, one tool call max, same prompt; the text_rl run only had the agent loop off.
+    # All three models get that training prompt, so every arm is symmetric.
+    "verltool-1.5b": dict(max_model_len=4096, models={
+        "base":    dict(model="Qwen/Qwen2.5-Math-1.5B", native="verltool_torl"),
+        "text_rl": dict(model="VerlTool/torl-fsdp-qwen_qwen2.5-math-1.5b-grpo-n16-b128-t1.0-lr1e-6new-no-toolusepenalty-430-step",
+                        native="verltool_torl"),
+        "tool_rl": dict(model="VerlTool/torl-fsdp_agent-qwen_qwen2.5-math-1.5b-grpo-n16-b128-t1.0-lr1e-6new-no-toolusepenalty-360-step",
+                        native="verltool_torl"),
+    }),
     "math-1.5b": dict(max_model_len=4096, models={
         "base":    dict(model="Qwen/Qwen2.5-Math-1.5B",            native="qwen_math_tir"),
         "text_rl": dict(model="sail/Qwen2.5-Math-1.5B-Oat-Zero",   native="qwen_math_tir"),
@@ -270,19 +292,18 @@ PRESETS = {
     }),
 }
 
-PRESET = "math-1.5b"       # start here; "math-7b" once the 1.5B run is clean
+PRESET = "verltool-1.5b"   # matched pair (same recipe, tool on vs off). "math-1.5b" = ToRL vs Oat-Zero (different recipes)
 SMOKE = False              # False: the real run. True: 6 AIME problems x 4 samples x 1024 tokens, ~10 min wiring check.
 
-# name -> (problems, samples per problem); 0 problems = the whole set. The pilot is AIME.
-#   aime24 / aime25   30 problems each, the hard end where the interpreter should matter
-# Available, off by default:  "gsm_hard": (300, 16)  GSM8K with huge numbers, 1016 integer-answer problems
-#                             "math500_l5": (0, 16)  the 134 level-5 MATH-500 problems
-#                             "math500": (0, 16)     all 500, not tool-load-bearing at 1.5B
+# name -> (problems, samples per problem); 0 problems = the whole set.
+#   aime25   30 problems, the hard end where the interpreter should matter
+#   math500  500 problems; the tool matters less here, but it is the compliance and format run
+# Also available:  "aime24": (0, 64)   "gsm_hard": (300, 16)   "math500_l5": (0, 16)
 if SMOKE:
-    DATASETS = {"aime24": (6, 4)}
+    DATASETS = {"aime25": (6, 4)}
     MAX_TOKENS = 1024
 else:
-    DATASETS = {"aime24": (0, 64), "aime25": (0, 64)}
+    DATASETS = {"aime25": (0, 64), "math500": (0, 16)}   # runs in this order: AIME25 lands first
     MAX_TOKENS = 3000
 RUN_ID = None              # None: today's date + preset, e.g. 2026-10-15_math-1.5b. To resume or extend an
                            # earlier run, set its id from the list printed below.

@@ -136,6 +136,8 @@ def summary(df: pd.DataFrame) -> pd.DataFrame:
             tag=tag, condition=cond, template=g["template"].iloc[0],
             problems=g["problem_id"].nunique(), samples=n,
             **{"pass@1": round(pkrow["pass@1"], 3), f"pass@{kmax}": round(pkrow[f"pass@{kmax}"], 3)},
+            pass1_boxed=(round(float(g["correct_boxed"].astype(float).mean()), 3)
+                         if "correct_boxed" in g and g["correct_boxed"].notna().all() else float("nan")),
             trunc_pct=round(100 * g["truncated"].mean(), 1),
             no_boxed_pct=round(100 * (~g["boxed_present"]).mean(), 1),
             code_pct=round(100 * g["code_emitted"].mean(), 1),
@@ -386,33 +388,43 @@ def plot_passk_main(df: pd.DataFrame, arms=MAIN_ARMS, title=None, ci=True, iters
 
 
 def verdict(df: pd.DataFrame, cond: str = "env_denied", iters: int = 1000):
-    """Print the three-way readout from the plan for one condition (same prompt, all models)."""
+    """Readout for one condition (same prompt and harness for all three models), base first.
+
+    Primary, erosion: is tool_rl below its own untrained base? That comparison has no recipe
+    confound, so it is the clean test of "lost what it had". Secondary, tool-specific: is
+    tool_rl below text_rl, the RL model trained without the tool? That is the counterfactual,
+    and it is only as fair as the pair is matched (use a same-recipe pair, e.g. VerlTool)."""
     pk = passk_table(df)
     sub = pk[pk.condition == cond]
     tags = set(sub.tag)
-    need = {"base", "text_rl", "tool_rl"}
-    if not need <= tags:
-        print(f"[{cond}] need base, text_rl, tool_rl; have {sorted(tags)}")
+    if not {"base", "tool_rl"} <= tags:
+        print(f"[{cond}] need at least base and tool_rl; have {sorted(tags)}")
         return
     n = int(sub.n_samples.min())
     kmax = ks_for(n)[-1]
     print(f"[{cond}] {sub.n_problems.min()} problems, n={n}, kmax={kmax}")
-    for k in (1, kmax):
-        for a, b in ((("tool_rl", cond), ("text_rl", cond)), (("tool_rl", cond), ("base", cond)),
-                     (("text_rl", cond), ("base", cond))):
-            m, lo, hi = paired_diff(df, a, b, k, iters=iters)
+    pairs = [("tool_rl", "base")] + ([("text_rl", "base"), ("tool_rl", "text_rl")] if "text_rl" in tags else [])
+    res = {}
+    for a, b in pairs:
+        for k in (1, kmax):
+            m, lo, hi = paired_diff(df, (a, cond), (b, cond), k, iters=iters)
+            res[(a, b, k)] = (m, lo, hi)
             sig = "" if lo <= 0 <= hi else "  *"
-            print(f"  pass@{k:<4} {a[0]:>7} - {b[0]:<7} = {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]{sig}")
+            print(f"  pass@{k:<4} {a:>7} - {b:<7} = {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]{sig}")
     g = df[df.condition == cond].groupby("tag")
     er = (g["arith_wrong"].sum() / g["arith_n"].sum() * 100).round(2)
     print("  arithmetic error rate (%):", er.to_dict())
-    d1 = paired_diff(df, ("tool_rl", cond), ("text_rl", cond), 1, iters=iters)
-    dk = paired_diff(df, ("tool_rl", cond), ("text_rl", cond), kmax, iters=iters)
-    if dk[2] < 0:
-        print("  -> tool_rl below text_rl at high k: ATROPHY signature")
-    elif d1[1] > 0 and dk[1] > 0:
-        print("  -> tool_rl above text_rl at pass@1 and high k: INTERNALIZATION signature")
-    elif d1[1] <= 0 <= d1[2] and dk[1] <= 0 <= dk[2]:
-        print("  -> tool_rl and text_rl overlap at every k: tool added nothing beyond RL (kill criterion)")
-    else:
-        print("  -> mixed: pass@1 gain without a high-k deficit, or vice versa; look at the curve")
+    below_base = any(res[("tool_rl", "base", k)][2] < 0 for k in (1, kmax))
+    above_base = any(res[("tool_rl", "base", k)][1] > 0 for k in (1, kmax))
+    print("  -> erosion test (vs untrained base): "
+          + ("tool_rl BELOW its base: erosion" if below_base else
+             "tool_rl above its base: no erosion" if above_base else "tool_rl level with its base: no erosion, no gain"))
+    if "text_rl" in tags:
+        d1, dk = res[("tool_rl", "text_rl", 1)], res[("tool_rl", "text_rl", kmax)]
+        if d1[2] < 0 or dk[2] < 0:
+            msg = "tool_rl below text_rl: a tool-specific cost relative to RL without the tool"
+        elif d1[1] > 0 or dk[1] > 0:
+            msg = "tool_rl above text_rl: tool training helped tool-free reasoning (internalization)"
+        else:
+            msg = "tool_rl and text_rl overlap at every k: no tool-specific effect detected"
+        print("  -> tool-specific test (vs text_rl): " + msg)

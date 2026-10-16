@@ -16,16 +16,23 @@ import ast
 import re
 from fractions import Fraction
 
-# Normalise common LaTeX / unicode operators to Python before scanning.
+# Normalise common LaTeX / unicode operators to Python before scanning. Math delimiters and layout
+# scaffolding become separators first: before 2026-10-15 \\[ \\] \\( \\) counted as glue, so the first
+# and last side of nearly every displayed equation was discarded (coverage 22-26% of AIME samples).
 _NORM = [
+    (r'\\boxed\{([^{}]*)\}', r' \1 '),
+    (r'\\\[|\\\]|\\\(|\\\)|\$\$', ' ; '),
+    (r'\\(?:quad|qquad|implies|Rightarrow|Longrightarrow|iff|therefore|hline|nonumber)\b'
+     r'|\\text\{[^{}]*\}|\\begin\{[a-z*]+\}|\\end\{[a-z*]+\}|\\\\', ' ; '),
+    (r'&', ''),                                     # align column marker: sits next to the '=', just drop it
     (r'\\times|\\cdot|×|·|\*\*?', '*'),
     (r'\\div|÷', '/'),
     (r'\\left\(|\\right\)', lambda m: '(' if 'left' in m.group(0) else ')'),
     (r'\\d?frac\{([^{}]+)\}\{([^{}]+)\}', r'((\1)/(\2))'),
     (r'\^\{([^{}]+)\}', r'^(\1)'),
-    (r'\\,|\\!|\;|\\ ', ''),
+    (r'\\,|\\!|\\;|\\:|\\ ', ''),   # LaTeX spacing; was r'\;' which deleted every literal semicolon
     (r'\\%|%', ''),
-    (r'\$', ''),
+    (r'\$', ' '),
     (r'−|–', '-'),
     (r'\\approx|≈', '='),
     (r'(?<=\d),(?=\d{3}\b)', ''),      # thousands separators: 1,234 -> 1234
@@ -114,9 +121,12 @@ def _glued_after(suffix):
 
 
 def check(text, rel_tol=1e-6):
+    """Identical equations within one text are counted once, so a looping sample that repeats a
+    false line 100 times contributes one error, not 100."""
     text = normalise(text)
     n = wrong = 0
     details = []
+    seen = set()
     for m in _RUN.finditer(text):
         run = m.group(0)
         if '=' not in run:
@@ -137,6 +147,10 @@ def check(text, rel_tol=1e-6):
         for (l, r) in zip(vals, vals[1:]):
             if l is None or r is None or not (_HAS_OP.search(l[0]) or _HAS_OP.search(r[0])):
                 continue
+            key = (re.sub(r'\s+', '', l[0]), re.sub(r'\s+', '', r[0]))
+            if key in seen:
+                continue
+            seen.add(key)
             ok = _ok(l[1], r[1], l[0], r[0], rel_tol)
             n += 1
             wrong += (not ok)

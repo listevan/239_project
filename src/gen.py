@@ -58,6 +58,10 @@ import arith_check  # noqa: E402
 #   torl           ToRL paper Fig. 3, verbatim, raw User/Assistant format.
 #   cir            CIR paper (2505.24480) Fig. 5 text, verbatim. The paper does not
 #                  say whether it sits in the system or user turn; system assumed.
+#   verltool_torl  The prompt both VerlTool ToRL-recipe checkpoints were trained on (tool
+#                  and no-tool runs alike), read from their released training rollouts
+#                  (step_records) on 2026-10-15: VerlTool's system_prompt v1 as it stood in
+#                  May 2025, chat format, system content ending in ".:\n".
 TEMPLATES = {
     "qwen_math_cot": (
         "<|im_start|>system\nPlease reason step by step, and put your final answer "
@@ -78,6 +82,13 @@ TEMPLATES = {
         "Assistant solves it.\nUser: Please integrate natural language reasoning with "
         "programs to solve the problem above, and put your final answer within \\boxed{}.\n"
         "{q}\nAssistant:"
+    ),
+    "verltool_torl": (
+        "<|im_start|>system\nA conversation between User and Assistant. The user asks a question, and the "
+        "Assistant solves it. The assistant first thinks about the reasoning process in the mind and then "
+        "provides the user with the answer. User: Please integrate natural language reasoning with programs "
+        "to solve the problem above, and put your final answer within \\boxed{}.:\n<|im_end|>\n"
+        "<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
     ),
     "cir": (
         "<|im_start|>system\nPlease solve the following problem step by step. During your "
@@ -178,6 +189,13 @@ def make_grader():
             b = last_boxed(response)
             return b is not None and norm(b) == norm(last_boxed(gold) or gold)
         return grade, "string"
+
+
+def grade_boxed(grade, text, gold):
+    """Strict variant: only the last \\boxed{...} counts. math-verify alone also credits an answer
+    that appears unboxed in the text (it mattered by at most 1 point on AIME, in looping arms)."""
+    b = last_boxed(text)
+    return False if b is None else bool(grade("\\boxed{" + b + "}", gold))
 
 
 # --------------------------------------------------------------------------- data
@@ -402,14 +420,15 @@ def to_record(s: Sample, item, cond, template, model, tag, grade=None, dataset=N
     text = s.gen
     fake_outputs = max(0, text.count(STOP_OUTPUT) - s.n_injected)
     if grade is None:
-        correct = a_n = a_wrong = None
+        correct = correct_boxed = a_n = a_wrong = None
     else:
         correct = bool(grade(text, item["answer"]))
+        correct_boxed = grade_boxed(grade, text, item["answer"])
         a_n, a_wrong, _ = arith_check.check(strip_fenced(text))
     return dict(
         model=model, tag=tag, condition=cond, template=template, dataset=dataset,
         problem_id=item["id"], subject=item.get("subject"), level=item.get("level"),
-        sample_idx=s.sidx, correct=correct, gold=item["answer"],
+        sample_idx=s.sidx, correct=correct, correct_boxed=correct_boxed, gold=item["answer"],
         boxed=last_boxed(text), boxed_present=last_boxed(text) is not None,
         truncated=s.truncated, finish=s.finish, gen_tokens=s.gen_tokens, rounds=s.rounds,
         code_emitted="```python" in text or "```py" in text, fake_outputs=fake_outputs,

@@ -45,12 +45,16 @@ runs/2026-10-15_math-1.5b/
     figures/  tables/                written by report.py, every file dated
 ```
 
-`DATASETS` in the notebook maps each dataset to (problems, samples). The pilot
-is AIME24 and AIME25 at 64 samples, the hard end where the interpreter should
-matter. Also available, one line each: `gsm_hard` (GSM8K with huge numbers,
-1016 integer-answer problems), `math500_l5` (the 134 level-5 problems) and
-`math500` (all 500; not tool-load-bearing at 1.5B). `RUN_ID` defaults to
-today's date plus the preset; set it to an existing run to resume or extend one.
+`PRESET` defaults to `verltool-1.5b`: VerlTool's two runs of one ToRL recipe on
+Qwen2.5-Math-1.5B (MATH train, GRPO, same prompt), one with the interpreter and one
+without, plus the untrained base. `math-1.5b` (ToRL vs Oat-Zero) is kept, but those
+recipes differ in data and algorithm as well as the tool. The verdict reports
+tool_rl vs the base first (erosion) and tool_rl vs text_rl second (tool-specific).
+
+`DATASETS` maps each dataset to (problems, samples). Default: AIME25 x 64 then
+MATH-500 x 16. Also available: `aime24`, `gsm_hard` (GSM8K with huge numbers),
+`math500_l5` (the 134 level-5 problems). `RUN_ID` defaults to today's date plus the
+preset; set it to an existing run to resume or extend one.
 
 ## Grade and analyze locally
 
