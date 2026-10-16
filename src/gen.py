@@ -62,6 +62,15 @@ TEMPLATES = {
         "to solve the problem above, and put your final answer within \\boxed{}.:\n<|im_end|>\n"
         "<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n"
     ),
+    # VerlTool/Qwen2.5-Math-1.5B-TIR-SFT*: the system prompt of its SFT data (VerlTool/openmathreasoning_tir_100K,
+    # OpenMathReasoning TIR traces), in the Qwen chat format, verbatim
+    "verltool_sft": (
+        "<|im_start|>system\nA conversation between User and Assistant. The user asks a question, and the "
+        "Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides "
+        "the user with the answer. Please integrate natural language reasoning with programs to solve the problem "
+        "above, and put your final answer within \\boxed{}.\n<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    ),
     # the bare question: the best prompt for Qwen2.5-Math base (Liu et al. 2025, arXiv 2503.20783, Table 1:
     # Qwen2.5-Math-1.5B AMC 43.4 with no template vs 32.5 with qwen_math_cot, greedy, 3000 tokens, boxed-only
     # grading). The chat wrapper makes base derail and loop.

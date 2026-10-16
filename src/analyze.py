@@ -18,10 +18,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROLE_ORDER = ["base", "tool_rl", "text_rl"]
+ROLE_ORDER = ["base", "tool_rl", "tool_sft", "text_rl"]
+TOOL_TAGS = ("tool_rl", "tool_sft")   # trained with the interpreter: RL (ToRL) and SFT
 # dataviz reference palette, categorical slots 1-3 (CVD-validated): blue, orange, aqua
-ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
-ROLE_STYLE = {"base": "-", "tool_rl": ":", "text_rl": "--"}
+ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "tool_sft": "#c2399b", "text_rl": "#1baf7a"}
+ROLE_STYLE = {"base": "-", "tool_rl": ":", "tool_sft": "-.", "text_rl": "--"}
 COND_ORDER = ["tool_on", "env_denied", "no_code", "plain"]
 # conditions get hues of their own (slots 4, 8, 6 of the same palette) so a per-model panel never reuses a
 # model color; conditions from older runs keep the colors they were plotted with
@@ -407,21 +408,22 @@ def verdict(df: pd.DataFrame, cond: str = "no_code", iters: int = 2000):
     bootstrap CIs, two-sided bootstrap p-values Holm-adjusted across the contrasts printed here; "*"
     marks adjusted p < 0.05. A difference is called above or below only when that holds; otherwise it is
     inconclusive, with its interval.
-      tool_on                 positive control: tool_rl must beat base with the tool, or tool training
+      tool_on                 positive control: each tool model (tool_rl, tool_sft) must beat base with the tool, or its tool training
                               did not take and the tool-off comparisons cannot be read as atrophy tests.
-      any other condition     erosion: tool_rl vs base. Attribution, only if text_rl ran: text_rl vs base
+      any other condition     erosion: each tool model vs base. Attribution, only if text_rl ran: text_rl vs base
                               and tool_rl vs text_rl, read together (a gap between tool_rl and text_rl
                               with tool_rl level with base is text_rl's gain, not a cost of the tool).
     Returns {(a, b, k): (mean, lo, hi, p_adj, n_problems)}."""
     pk = passk_table(df)
     sub = pk[pk.condition == cond]
     tags = set(sub.tag)
-    if not {"base", "tool_rl"} <= tags:
-        print(f"[{cond}] need at least base and tool_rl; have {sorted(tags)}")
+    tools = [t for t in TOOL_TAGS if t in tags]
+    if "base" not in tags or not tools:
+        print(f"[{cond}] need base and a tool model ({', '.join(TOOL_TAGS)}); have {sorted(tags)}")
         return {}
     kmax = shared_kmax(df[df.condition == cond])
-    pairs = [("tool_rl", "base")] + ([("text_rl", "base"), ("tool_rl", "text_rl")]
-                                     if "text_rl" in tags and cond != "tool_on" else [])
+    pairs = [(t, "base") for t in tools] + ([("text_rl", "base"), ("tool_rl", "text_rl")]
+                                           if {"text_rl", "tool_rl"} <= tags and cond != "tool_on" else [])
     raw = {(a, b, k): paired_diff(df, (a, cond), (b, cond), k, iters=iters, full=True)
            for a, b in pairs for k in (1, kmax)}
     keys = list(raw)
@@ -440,37 +442,41 @@ def verdict(df: pd.DataFrame, cond: str = "no_code", iters: int = 2000):
         d1, dk = _describe(*res[(a, b, 1)][:4]), _describe(*res[(a, b, kmax)][:4])
         return d1, dk
 
-    t1, tk = call("tool_rl", "base")
-    if cond == "tool_on":
-        ok = "above" in (t1, tk) and "below" not in (t1, tk)
-        print("  -> positive control: " + ("tool_rl above base with the tool: tool training worked" if ok else
-              f"FAILED (pass@1 {t1}, pass@{kmax} {tk}): tool_rl is not shown above base with the tool, so the "
-              "tool-off contrasts cannot be read as tests of atrophy"))
-        return res
-    if t1 == "above" and tk == "below":
-        msg = f"sharpening: tool_rl above base at pass@1 but below at pass@{kmax}"
-    elif "below" in (t1, tk):
-        msg = f"tool_rl BELOW base (pass@1 {t1}, pass@{kmax} {tk}): erosion"
-    elif "above" in (t1, tk):
-        msg = f"tool_rl above base (pass@1 {t1}, pass@{kmax} {tk}): no erosion"
-    else:
-        m, lo, hi = res[("tool_rl", "base", kmax)][:3]
-        msg = (f"inconclusive: no difference detected (pass@{kmax} {m:+.3f} [{lo:+.3f}, {hi:+.3f}]); "
-               "this is not evidence of no erosion")
-    print("  -> erosion test (tool_rl vs untrained base): " + msg)
-    if "text_rl" in tags:
-        x1, xk = call("text_rl", "base")
-        y1, yk = call("tool_rl", "text_rl")
-        text_up = "above" in (x1, xk)
-        tool_below_text = "below" in (y1, yk)
-        if "below" in (t1, tk):
-            att = ("text_rl also below base: the drop is RL's, not specific to the tool" if "below" in (x1, xk)
-                   else "text_rl not below base: the drop is specific to tool training")
-        elif tool_below_text and text_up:
-            att = "text_rl rose above base and tool_rl did not: RL without the tool gained, tool RL did not"
-        elif tool_below_text:
-            att = "tool_rl below text_rl, neither clearly different from base"
+    calls = {}
+    for t in tools:
+        t1, tk = calls[t] = call(t, "base")
+        if cond == "tool_on":
+            ok = "above" in (t1, tk) and "below" not in (t1, tk)
+            print(f"  -> positive control: " + (f"{t} above base with the tool: tool training worked" if ok else
+                  f"FAILED (pass@1 {t1}, pass@{kmax} {tk}): {t} is not shown above base with the tool, so its "
+                  "tool-off contrasts cannot be read as tests of atrophy"))
+            continue
+        if t1 == "above" and tk == "below":
+            msg = f"sharpening: {t} above base at pass@1 but below at pass@{kmax}"
+        elif "below" in (t1, tk):
+            msg = f"{t} BELOW base (pass@1 {t1}, pass@{kmax} {tk}): erosion"
+        elif "above" in (t1, tk):
+            msg = f"{t} above base (pass@1 {t1}, pass@{kmax} {tk}): no erosion"
         else:
-            att = "no difference between tool_rl and text_rl detected"
-        print("  -> attribution (vs text_rl): " + att)
+            m, lo, hi = res[(t, "base", kmax)][:3]
+            msg = (f"inconclusive: no difference detected (pass@{kmax} {m:+.3f} [{lo:+.3f}, {hi:+.3f}]); "
+                   "this is not evidence of no erosion")
+        print(f"  -> erosion test ({t} vs untrained base): " + msg)
+    if cond == "tool_on" or not {"text_rl", "tool_rl"} <= tags:
+        return res
+    t1, tk = calls["tool_rl"]
+    x1, xk = call("text_rl", "base")
+    y1, yk = call("tool_rl", "text_rl")
+    text_up = "above" in (x1, xk)
+    tool_below_text = "below" in (y1, yk)
+    if "below" in (t1, tk):
+        att = ("text_rl also below base: the drop is RL's, not specific to the tool" if "below" in (x1, xk)
+               else "text_rl not below base: the drop is specific to tool training")
+    elif tool_below_text and text_up:
+        att = "text_rl rose above base and tool_rl did not: RL without the tool gained, tool RL did not"
+    elif tool_below_text:
+        att = "tool_rl below text_rl, neither clearly different from base"
+    else:
+        att = "no difference between tool_rl and text_rl detected"
+    print("  -> attribution (vs text_rl): " + att)
     return res

@@ -16,6 +16,7 @@ on math where the tool helps but cannot replace the reasoning.
 |---|---|---|
 | `tool_rl` | `torl` (ToRL's own, verbatim) | GAIR/ToRL-1.5B, RL with the interpreter |
 | `base` | `qwen_math_tir` | Qwen/Qwen2.5-Math-1.5B, untrained (ToRL's starting point) |
+| `tool_sft` | `verltool_sft` (its SFT data's system prompt) | VerlTool/Qwen2.5-Math-1.5B-TIR-SFT-new: SFT on OpenMathReasoning TIR traces, from the same base (checked by weight distance) |
 | `text_rl` | none for now | Oat-Zero, RL without a tool: only if tool_rl lands below base |
 
 - **Main test:** tool_rl vs base with the tool off (`env_denied`, `plain`). Below base is
@@ -34,6 +35,11 @@ Pilot set: `math500_l5`, MATH-500 level 5 minus the 10 problems found in ToRL's 
 Known limitation: Qwen2.5-Math already reasons in Python-style code without running it, and
 RL amplifies that even with random rewards (Shao et al., arXiv 2506.10947). Nearly every
 released tool-RL math checkpoint is Qwen2.5-based, so no non-Qwen pair exists at this size.
+
+Why `tool_sft`: SFT on tool traces is known to cut tool-free accuracy (Cheng et al., arXiv
+2605.06326: 54.3 -> 34.1 on Qwen3-4B, with the model writing code and inventing its output), while RL
+does not. Untested: whether telling the model there is no interpreter (`env_denied`) or blocking code
+(`plain`) recovers it, i.e. whether the drop is a habit or lost skill.
 
 ## Pilot gates
 

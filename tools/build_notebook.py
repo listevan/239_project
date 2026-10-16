@@ -37,17 +37,20 @@ checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 |---|---|---|
 | `tool_rl` | `tool_on`, `env_denied`, `plain` | GAIR/ToRL-1.5B, RL with the interpreter |
 | `base` | `tool_on`, `env_denied`, `plain` | Qwen2.5-Math-1.5B, untrained |
+| `tool_sft` | `tool_on`, `env_denied`, `plain` | VerlTool Qwen2.5-Math-1.5B TIR-SFT, SFT on interpreter traces |
 | `text_rl` | none for now | Oat-Zero, RL without a tool: add `plain` only if tool_rl lands below base |
 
 (`no_code` keeps the code-inviting prompt and leaks unfenced code in about 40% of samples, so the pilot uses
 `plain` as the tool-free measure.)
 
-**Read in order:** `tool_on` first (positive control: tool_rl must beat base with the
-tool), then tool_rl vs base with the tool off (below base = atrophy), then text_rl
-`plain` for whether any gap belongs to the tool.
+**Read in order:** `tool_on` first (positive control: each tool model must beat base with
+the tool), then each tool model vs base with the tool off (below base = atrophy), then text_rl
+`plain` for whether any gap belongs to the tool. For tool_sft, compare `env_denied` with `plain`:
+SFT on tool traces is known to drop tool-free accuracy (Cheng et al. 2605.06326); if `plain` (code
+blocked) recovers it, the drop is a habit, not lost skill.
 
 **Pilot size:** MATH-500 level 5 (the hardest level), 30 problems x 4 samples (pass@1 to
-pass@4), 6 arms, about 15 minutes. Computation helps but insight is still needed, and base
+pass@4), 9 arms (3 per model), about 20 minutes. Computation helps but insight is still needed, and base
 should solve a fair share (AMC 12 2024 was too hard: base .175 tool-free). The 10 level-5
 problems found in ToRL's training data are left out.
 
@@ -116,16 +119,19 @@ PRESET = "torl-1.5b"
 MODELS = {
     "tool_rl": "GAIR/ToRL-1.5B",                  # RL with a code interpreter; beats base with the tool
     "base":    "Qwen/Qwen2.5-Math-1.5B",          # the untrained start
+    "tool_sft": "VerlTool/Qwen2.5-Math-1.5B-TIR-SFT-new",  # SFT on interpreter traces (OpenMathReasoning TIR)
     "text_rl": "sail/Qwen2.5-Math-1.5B-Oat-Zero", # RL without a tool (different recipe): attribution only
 }
 TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plain" always uses the bare question
     "tool_rl": "torl",            # ToRL's own raw prompt (paper Fig. 3)
     "base":    "qwen_math_tir",   # the Qwen2.5-Math tool-integrated prompt
+    "tool_sft": "verltool_sft",   # the system prompt of its SFT data, verbatim
     "text_rl": "qwen_math_tir",
 }
 CONDITIONS_BY_MODEL = {
     "tool_rl": ["tool_on", "env_denied", "plain"],
     "base":    ["tool_on", "env_denied", "plain"],
+    "tool_sft": ["tool_on", "env_denied", "plain"],
     "text_rl": [],               # attribution, only needed if tool_rl lands below base: then ["plain"]
 }
 SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
@@ -326,7 +332,8 @@ def build():
         "language_info": {"name": "python"},
     }
     nb.cells = [md(INTRO), code(GPU_CHECK), code(INSTALL), code(DRIVE), code(CLONE), code(CONFIG), code(RUN_SETUP),
-                code('run_model("tool_rl")'), code('run_model("base")'), code('run_model("text_rl")'), md(AFTER)]
+                code('run_model("tool_rl")'), code('run_model("base")'), code('run_model("tool_sft")'),
+                code('run_model("text_rl")'), md(AFTER)]
     nbf.validate(nb)
     OUT.parent.mkdir(exist_ok=True)
     nbf.write(nb, OUT)

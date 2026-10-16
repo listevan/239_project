@@ -41,8 +41,8 @@ def setup_ns(out, datasets=None):
 
 def test_structure():
     c = cells()
-    assert len(c) == 9 and not any(x.startswith("%%writefile") for x in c)
-    assert c[-3:] == ['run_model("tool_rl")', 'run_model("base")', 'run_model("text_rl")']
+    assert len(c) == 10 and not any(x.startswith("%%writefile") for x in c)
+    assert c[-4:] == ['run_model("tool_rl")', 'run_model("base")', 'run_model("tool_sft")', 'run_model("text_rl")']
     assert "github.com/listevan/239_project.git" in cell("git")
 
 
@@ -57,8 +57,10 @@ def test_config_cell():
         assert ns["RUN_ID"].endswith("_torl-1.5b")
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
         assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "plain"],
-                                              "base": ["tool_on", "env_denied", "plain"], "text_rl": []}
-        assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "text_rl": "qwen_math_tir"}
+                                              "base": ["tool_on", "env_denied", "plain"],
+                                              "tool_sft": ["tool_on", "env_denied", "plain"], "text_rl": []}
+        assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "tool_sft": "verltool_sft",
+                                    "text_rl": "qwen_math_tir"}
         assert cfg["models"]["tool_rl"] == "GAIR/ToRL-1.5B"
         src = cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace(
             "MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
