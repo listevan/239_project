@@ -154,6 +154,8 @@ os.makedirs(RUNS, exist_ok=True)
 existing = sorted(d for d in os.listdir(RUNS) if os.path.isdir(f"{RUNS}/{d}"))
 print("runs on Drive:", ", ".join(existing) or "(none)")
 print("this run     :", RUN_ID, "(resuming)" if RUN_ID in existing else "(new)")
+print("datasets     :", ", ".join(f"{k} {p or 'all'} problems x {n} samples" for k, (p, n) in DATASETS.items()))
+print("arms         :", "; ".join(f"{t}: {', '.join(c)}" for t, c in CONDITIONS_BY_MODEL.items()))
 os.makedirs(OUT, exist_ok=True)
 CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, template=TEMPLATE, conditions_by_model=CONDITIONS_BY_MODEL,
               datasets=DATASETS, max_tokens=MAX_TOKENS, max_model_len=MAX_MODEL_LEN, temperature=TEMPERATURE,
@@ -264,6 +266,7 @@ def stream(cmd):
 
 def run_model(tag):
     print(f"[{tag}] {MODELS[tag]}  ->  {OUT}")
+    print(f"[{tag}] datasets {DATASET_SPEC}; conditions {', '.join(CONDITIONS_BY_MODEL[tag])}")
     if status(tag) == 0 and not OVERWRITE:
         print(f"[{tag}] every arm is already on Drive, nothing to generate")
     elif not shutil.which("nvidia-smi"):
