@@ -244,13 +244,13 @@ def _format_axis(ax, n_max):
         ax.spines[side].set_visible(False)
 
 
-def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters):
-    """One pass@k curve (plus bootstrap band) for arm (tag, cond). Returns False if absent."""
+def _draw_arm(ax, df, pk, tag, cond, color, style, label, ci, iters, kmax=None):
+    """One pass@k curve (plus bootstrap band) for arm (tag, cond), up to kmax. Returns False if absent."""
     row = pk[(pk.tag == tag) & (pk.condition == cond)]
     if row.empty:
         return False
     r = row.iloc[0]
-    ks = ks_for(int(r["n_samples"]))
+    ks = [k for k in ks_for(int(r["n_samples"])) if kmax is None or k <= kmax]
     ax.plot(ks, [r[f"pass@{k}"] for k in ks], style, color=color, lw=2, marker=COND_MARK.get(cond, "o"), ms=6,
             label=label)
     if ci:
@@ -270,7 +270,13 @@ def _arm(line):
     return tag, cond
 
 
-def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None, caption=None):
+def shared_kmax(df: pd.DataFrame) -> int:
+    """Largest k every arm in df supports (the smallest sample count per problem across arms), so curves
+    from arms sampled 64 and 16 times are compared over the same range."""
+    return ks_for(int(df.groupby(["tag", "condition", "problem_id"]).size().min()))[-1]
+
+
+def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300, save=None, caption=None, kmax="shared"):
     """Draw pass@k curves.
 
     lines    a list of "model condition" strings for one panel, or a dict {panel title: [lines]} for panels
@@ -278,11 +284,15 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
     color    "model" or "condition": what the color encodes; the other sets the line style when it varies.
     ci       shade a 95% bootstrap band over problems.
     save     path of a PNG to write.   caption  small gray line under the plot, e.g. provenance(dir).
+    kmax     x-axis limit: "shared" (default) = the largest k every arm in df supports, an int, or None
+             for each arm's own maximum.
     Lines whose arm is not in df are listed and skipped.
     """
     import matplotlib.pyplot as plt
     panels = lines if isinstance(lines, dict) else {None: lines}
     pk = passk_table(df)
+    if kmax == "shared":
+        kmax = shared_kmax(df)
     n = len(panels)
     fig, axes = plt.subplots(1, n, figsize=(7 if n == 1 else 4.6 * n, 4.4), dpi=120, sharey=True, squeeze=False)
     missing = []
@@ -294,9 +304,9 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
                 col, style = COND_COLOR.get(cond, GRAY), (ROLE_STYLE.get(tag, "-") if vary_tag else "-")
             else:
                 col, style = ROLE_COLOR.get(tag, GRAY), (COND_STYLE.get(cond, "-") if vary_cond else "-")
-            if not _draw_arm(ax, df, pk, tag, cond, col, style, f"{tag} {cond}", ci, iters):
+            if not _draw_arm(ax, df, pk, tag, cond, col, style, f"{tag} {cond}", ci, iters, kmax):
                 missing.append(f"{tag} {cond}")
-        _format_axis(ax, pk["n_samples"].max())
+        _format_axis(ax, min(pk["n_samples"].max(), kmax or 10 ** 9))
         if name:
             ax.set_title(name, loc="left")
         if ax.get_lines():

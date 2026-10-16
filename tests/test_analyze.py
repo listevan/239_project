@@ -120,6 +120,17 @@ def test_load_results_and_stamps():
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4}", an.data_stamp(folder / "empty"))
 
 
+def test_plot_caps_at_shared_k():
+    big = synth(n_problems=6, n=64, arms={"tool_rl": ("no_code",)})
+    small = synth(n_problems=6, n=16, seed=1, arms={"base": ("no_code",)})
+    df = pd.concat([big, small], ignore_index=True)
+    assert an.shared_kmax(df) == 16
+    fig = an.plot(df, ["tool_rl no_code", "base no_code"], ci=False)
+    ax = fig.axes[0]
+    assert max(max(l.get_xdata()) for l in ax.get_lines()) == 16 and list(ax.get_xticks()) == [1, 2, 4, 8, 16]
+    fig = an.plot(df, ["tool_rl no_code"], ci=False, kmax=None)
+    assert max(fig.axes[0].get_lines()[0].get_xdata()) == 64
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
