@@ -150,3 +150,96 @@ the code: `prose_redirect` cuts the fence the moment it opens and splices in "Le
 me do this computation by hand instead", with the ban only after four redirects;
 `assist_denied` keeps env_denied's setup and tells the model, in the denial, that
 no output exists and to compute by hand step by step.
+
+## Second read, 2026-10-15 evening (three Opus 5.5 agents)
+
+Per-sample files: `analysis/trajectories_2026-10-15_opus/` in the run folder
+(`prose/` anatomy of prose_only, `matched/` like-for-like ability comparison,
+`falsify/` adversarial review).
+
+### Corrections to sections 3 and 4 above
+
+- The 5.8% vs 8.2% hand arithmetic comparison used different problems for each
+  model. On the 25 problems both samples share it is 8.7% (ToRL) vs 6.7%
+  (Oat-Zero), within noise either way. Over about 3,000 automatically checked
+  steps per arm, single-operation error rates are 0.5 to 1.0% for both and
+  indistinguishable. "If anything fewer slips" is withdrawn.
+- "When ToRL computes by hand after a denial it succeeds" rested on 4 samples,
+  2 correct. Withdrawn.
+
+### What holds
+
+- **No erosion below base.** ToRL with the tool off is never significantly below
+  Qwen2.5-Math-1.5B on any problem. Gain over base: +4.8 points env_denied
+  [+1.7, +8.3], +2.5 prompt_off [+0.1, +5.3], -0.2 prose_only. Oat-Zero: +9.7,
+  +6.4, +8.8.
+- **No template confound.** ToRL pass@1 is 0.097 under its raw training template
+  (env_denied) and 0.097 under the chat template (prompt_off); one role-token
+  leak in 3,840 rows.
+- **prose_only is an artifact of the ban.** ToRL writes or announces code in 90%
+  of prose_only samples, at the same place (median 1,698 vs 1,564 characters),
+  with the same announcement (99%) and the same program (identifier overlap 0.33,
+  the same as two prompt_off samples of one problem). Where the fence would go it
+  emits a bare `python`, `\[`, `####` or junk tokens. Nothing ends the program,
+  so 40 to 42% of samples are code-then-loop. Oat-Zero loses 1 point under the
+  ban (0.93x of prompt_off), ToRL 6 points (0.38x).
+
+### What does not hold, and the reconciled estimate
+
+How ToRL compares with Oat-Zero when it actually works by hand depends on what
+counts as hand work:
+
+| definition | problems | ToRL minus Oat-Zero, pass@1 |
+|---|---|---|
+| no code at all, no aborted-code tells, pooled tool-off (strict, k=8) | 23 | +0.4 [-5.2, +6.2] |
+| no code at all, pooled (k=3) | 45 | -3.4 [-7.7, +0.6] |
+| GENUINE_PROSE under prose_only (>= 5 samples each) | 18 | +0.1 [-7.3, +8.4] |
+| finished pure prose under prose_only | 20 | -11.3 [-22, -1] |
+| no-code plus post-denial continuations, env_denied | 28 | -10.4 [-19, -3] |
+
+The large negative rows mix populations: most of ToRL's hand work comes after a
+denial, while most of Oat-Zero's is prose from the start. Within post-denial
+continuations ToRL does better than Oat-Zero (9.4% vs 1.6% accuracy). ToRL's
+code-free samples are a 4 to 12% tail chosen by the model itself, toward problems
+it codes on least (rank correlation -0.90). The data rule out a deficit above
+about 8 points and cannot rule out 3 to 5.
+
+Where ToRL's hand work does fail, it is strategy and enumeration, not arithmetic:
+on aime25-2 its multinomials are right but it lists all three cases in 1 of 14
+hand attempts (Oat-Zero solves it in about 70% of attempts); on aime25-16 it
+reaches "n + 2 divides 39" in 14 to 25 of 64 samples (Oat-Zero 51) and then tries
+n = 1, 2, 3.
+
+### The gap is partly the recipe, not the tool
+
+On 10 problems ToRL trails Oat-Zero even with the tool on (aime25-5 28 vs 48 of
+64, aime25-15 5 vs 21, aime24-84 19 vs 35). Those problems carry 59% of the
+env_denied gap, 33% of prompt_off's and 54% of prose_only's.
+
+### Revised reading
+
+Tool RL left ToRL's tool-free reasoning near the base model's level, while text
+RL improved Oat-Zero's by 6 to 10 points. With these two checkpoints that cannot
+be called atrophy (lost) as opposed to never gained, because the recipes differ
+in data and algorithm as well as the tool. The behavioural findings stand: ToRL
+reaches for code in about 90% of solutions, keeps the same plan when the syntax
+is banned, and often asserts a result after a denial.
+
+### Grading note
+
+math-verify credits answers that are not boxed: 30 of ToRL's 140 correct
+prose_only rows have no `\boxed`. This affects every arm; a boxed-only accuracy
+column would make the strictness explicit.
+
+### Next experiments, revised
+
+1. prose_redirect and assist_denied (implemented, not yet run): cheapest way to
+   raise ToRL's hand-work rate and tighten the interval.
+2. Forced-plan completion: give all three models the same verified prose
+   solution up to the point where the computation or enumeration starts, ban
+   fences after that prefix, score about 100 items. Holds plan and habit fixed;
+   with base as the floor it separates lost from never gained.
+3. More problems: 90 to 135 AIME-level problems for 80% power at a 5-point
+   difference.
+4. A matched pair from one recipe (same data and algorithm, tool on vs off),
+   which is what "atrophy" strictly needs.
