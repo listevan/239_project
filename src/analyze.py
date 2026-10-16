@@ -21,15 +21,16 @@ import pandas as pd
 ROLE_ORDER = ["base", "text_rl", "tool_rl"]
 # dataviz reference palette, categorical slots 1-3 (CVD-validated): blue, orange, aqua
 ROLE_COLOR = {"base": "#2a78d6", "tool_rl": "#eb6834", "text_rl": "#1baf7a"}
-COND_ORDER = ["prompt_off", "env_denied", "assist_denied", "prose_only", "prose_redirect", "tool_on", "plain_cot"]
+COND_ORDER = ["tool_on", "env_denied", "no_code", "prompt_off", "assist_denied", "prose_only", "prose_redirect",
+              "plain_cot"]
 COND_STYLE = {"prompt_off": "-", "env_denied": "--", "assist_denied": (0, (6, 2)), "prose_only": "-.",
-              "prose_redirect": (0, (3, 1, 1, 1)), "tool_on": ":", "plain_cot": (0, (5, 1))}
+              "prose_redirect": (0, (3, 1, 1, 1)), "no_code": "-", "tool_on": ":", "plain_cot": (0, (5, 1))}
 COND_MARK = {"prompt_off": "o", "env_denied": "s", "assist_denied": "P", "prose_only": "v", "prose_redirect": "X",
-             "tool_on": "^", "plain_cot": "D"}
+             "no_code": "D", "tool_on": "^", "plain_cot": "*"}
 # conditions get hues of their own (reference palette slots 7, 8, 4, 6, validated as a set) so a
 # per-model panel never reuses a model color
 COND_COLOR = {"prompt_off": "#6250d6", "env_denied": "#e34948", "assist_denied": "#1c5cab", "prose_only": "#e87ba4",
-              "prose_redirect": "#008300", "tool_on": "#eda100", "plain_cot": "#52514e"}
+              "prose_redirect": "#52514e", "no_code": "#008300", "tool_on": "#eda100", "plain_cot": "#9a9890"}
 ROLE_STYLE = {"base": "-", "text_rl": "--", "tool_rl": ":"}
 GRAY = "#52514e"
 # default arms of the headline figure: every model asked for code and denied it, plus the base with the tool

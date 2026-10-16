@@ -259,6 +259,19 @@ def test_redirect_and_assist_arms_use_the_right_templates():
         assert (out / "math500" / "base__assist_denied__qwen_math_tir.jsonl").exists()
         assert FakeLLM.biases == [None, None]   # no arm-wide ban: the redirect ban is per sample, after the cap
 
+def test_no_code_arm_bans_backticks_and_uses_native_prompt():
+    install_stubs()
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d)
+        FakeLLM.calls, FakeLLM.biases, FakeLLM.crash_on_call = [], [], None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gen.main(["--model", "m/base", "--tag", "base", "--conditions", "no_code", "--native-template", "verltool_torl",
+                      "--n", str(N), "--chunk", "0", "--max-tokens", "64", "--out", str(out), "--no-grade"])
+        assert "no_code: 2 backtick tokens banned" in buf.getvalue() and FakeLLM.biases == [{7: -100.0, 8: -100.0}]
+        assert (out / "math500" / "base__no_code__verltool_torl.jsonl").exists()
+        assert "A conversation between User and Assistant" in FakeLLM.calls[0][0]
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

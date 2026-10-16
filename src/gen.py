@@ -15,6 +15,13 @@ Every model gets the same grid. Conditions:
                backtick. Kept for the record: ToRL and the base answer the ban with
                unfenced Python and loop until the budget ends (69% truncation), so
                it measures a spiral, not ability. Use prose_redirect instead.
+  no_code      the model's own training prompt (same as tool_on and env_denied), but code
+               cannot be written: every backtick token is banned from the start, and the
+               moment an unfenced program starts (a line beginning import / from / def /
+               print( / a bare "python" line, or \\text{import ...}) the opener is cut and
+               "Let me do this computation by hand instead" is spliced in. n_calls = how
+               often it tried. The ability test of the three-condition design
+               (tool_on / env_denied / no_code), where only the code handling differs.
   prose_redirect  shared no-code prompt. The moment the model opens a code fence the
                opener is cut and "Let me do this computation by hand instead" is
                spliced in, and generation continues. After --max-calls redirects the
@@ -111,6 +118,11 @@ DENIAL_ASSIST = ("No interpreter is available; the code was not executed and pro
                  "intermediate value, and only then give the final answer.")
 REDIRECT_TEXT = "Let me do this computation by hand instead, step by step.\n"
 FENCE_OPEN_STOPS = ("```python\n", "```py\n", "```\n")   # a fence opening under prose_redirect
+# The start of an unfenced program. Seen under the backtick ban (prose_only): the model announces
+# code, then writes it without a fence, at line start or wrapped in \text{}. Caught under no_code.
+UNFENCED_CODE_STOPS = ("\nimport ", "\nfrom ", "\ndef ", "\nprint(", "\npython\n",
+                       "\\text{import", "\\text{from", "\\text{def", "\\text{print")
+REDIRECT_STOPS = {"prose_redirect": FENCE_OPEN_STOPS, "no_code": UNFENCED_CODE_STOPS}
 
 STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # model opens the output block itself
@@ -118,8 +130,10 @@ TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
 
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
-CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot", "prose_only", "prose_redirect", "assist_denied")
-LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only", "prose_redirect", "assist_denied")
+CONDITIONS = ("prompt_off", "env_denied", "tool_on", "plain_cot", "prose_only", "prose_redirect", "assist_denied",
+              "no_code")
+LOOP_CONDITIONS = ("prompt_off", "env_denied", "tool_on", "prose_only", "prose_redirect", "assist_denied", "no_code")
+BANNED_FROM_START = ("prose_only", "no_code")   # backtick ban on the whole arm
 SHARED_PROMPT_CONDITIONS = ("prompt_off", "prose_only", "prose_redirect")
 FENCE_BAN_BIAS = -100.0
 
@@ -316,12 +330,13 @@ def advance(s: Sample, text: str, n_tokens: int, finish_reason, stop_reason, con
     if finish_reason == "length":
         s.done, s.truncated, s.finish = True, True, "length"
         return None
-    if cond == "prose_redirect" and stop_reason in FENCE_OPEN_STOPS:
+    if cond in REDIRECT_STOPS and stop_reason in REDIRECT_STOPS[cond]:
         if s.gen.endswith(stop_reason):
             s.gen = s.gen[:-len(stop_reason)]
-        s.n_calls += 1          # a redirect: the model tried to open a code block
-        s.gen += REDIRECT_TEXT
-        return REDIRECT_TEXT
+        s.n_calls += 1          # a redirect: the model tried to start code
+        inj = ("" if s.gen.endswith("\n") else "\n") + REDIRECT_TEXT
+        s.gen += inj
+        return inj
     if stop_reason not in (STOP_FENCE, STOP_OUTPUT):
         s.done, s.finish = True, "eos"
         return None
@@ -380,6 +395,9 @@ def round_stops_and_biases(cond, keep, final, max_calls, fence_bias):
         stops = [TEXT_STOPS if sp_ else TEXT_STOPS + list(FENCE_OPEN_STOPS) for sp_ in spent]
         biases = [fence_bias if sp_ else None for sp_ in spent]
         return stops, biases
+    if cond == "no_code":
+        # the ban holds throughout; redirects stay armed until the round cap
+        return (TEXT_STOPS if final else TEXT_STOPS + list(UNFENCED_CODE_STOPS)), [fence_bias] * len(keep)
     return (TEXT_STOPS if final else TEXT_STOPS + list(TOOL_STOPS)), None
 
 
@@ -663,7 +681,7 @@ def main(argv=None):
                         s.truncated, s.finish = True, "length"
                     samples.append(s)
             return samples
-        first_stops = TEXT_STOPS + list(FENCE_OPEN_STOPS if cond == "prose_redirect" else TOOL_STOPS)
+        first_stops = TEXT_STOPS + list(REDIRECT_STOPS[cond] if cond in REDIRECT_STOPS else TOOL_STOPS)
         res = llm.generate(prompts, sp(n, args.max_tokens, first_stops), use_tqdm=True)
         first = []
         for (pidx, _), prompt, r in zip(part, prompts, res):
@@ -688,11 +706,11 @@ def main(argv=None):
         for cond, template in plan[ds]:
             t1 = time.time()
             path = out_path(ds, cond, template)
-            if cond == "prose_only":
+            if cond in BANNED_FROM_START:
                 if not fence_ids:
-                    print("   WARNING: tokenizer exposes no vocab, the backtick ban is empty; prose_only == prompt_off", flush=True)
+                    print(f"   WARNING: tokenizer exposes no vocab, the backtick ban is empty under {cond}", flush=True)
                 arm_bias["logit_bias"] = {i: FENCE_BAN_BIAS for i in fence_ids}
-                print(f"   prose_only: {len(fence_ids)} backtick tokens banned", flush=True)
+                print(f"   {cond}: {len(fence_ids)} backtick tokens banned", flush=True)
             else:
                 arm_bias["logit_bias"] = None
             if force(cond):

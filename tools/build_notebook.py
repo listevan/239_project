@@ -61,7 +61,8 @@ each condition is read as its own three-way comparison.
 | `prompt_off` | shared no-code prompt ("do not write code") | intercepted, denial message injected, nothing runs |
 | `env_denied` | the model's tool prompt (asks for code) | intercepted, denial message injected, nothing runs |
 | `tool_on` | the model's tool prompt | executed with `python -I`, 4-call budget, then the budget message |
-| `prose_redirect` | shared no-code prompt | the fence opener is cut and "Let me do this computation by hand instead" is spliced in; after 4 redirects the backtick ban takes over. The ability test. |
+| `no_code` | the model's tool prompt | cannot happen: every backtick token is banned, and the start of an unfenced program (`import`, `def`, `print(`, a bare `python` line) is cut and replaced by "Let me do this computation by hand instead". The ability test. |
+| `prose_redirect` | shared no-code prompt | the fence opener is cut and "Let me do this computation by hand instead" is spliced in; after 4 redirects the backtick ban takes over |
 | `assist_denied` | the model's tool prompt | intercepted; the denial says no output exists, do not assume one, compute by hand step by step |
 | `prose_only` | shared no-code prompt plus a logit ban on every backtick token | nothing can open; kept for the record: ToRL and base answer the ban with unfenced Python and loop |
 | `plain_cot` (optional) | shared plain CoT prompt | nothing intercepted; the model fabricates its own output block. CIR's condition. |
@@ -69,12 +70,12 @@ each condition is read as its own three-way comparison.
 **Hardware.** Pick a GPU runtime. A100 40 GB runs everything. L4 24 GB runs the
 1.5B preset comfortably and the 7B preset slowly. T4 only fits 1.5B (fp16).
 Rough wall-clock on an A100 with vLLM for the default plan (AIME25 x 64 plus
-MATH-500 x 16, about 10k samples per arm, five conditions):
+MATH-500 x 16, about 10k samples per arm, three conditions):
 
 | Preset | per model | whole grid |
 |---|---|---|
-| 1.5B presets | about 1 to 1.25 h | 3 to 4 h (AIME25 lands in the first 20 min of each model) |
-| 7B presets | 3 to 4 h | 10 to 12 h, split it over sessions |
+| 1.5B presets | about 40 to 50 min | 2 to 2.5 h (AIME25 lands in the first 15 min of each model) |
+| 7B presets | 2 to 3 h | 7 to 8 h, split it over sessions |
 
 `SMOKE = True` in the config cell runs a 10-minute wiring check on 6 AIME problems
 instead of the real run; use it after changing code, not before every run.
@@ -322,8 +323,10 @@ OVERWRITE = False          # False: generate only missing arms. True: redo every
 GRADE_ON_COLAB = False     # False: Colab only generates; grade + analyze on your laptop (section 6)
 
 import datetime, json, os
-CONDITIONS = ["prompt_off", "env_denied", "assist_denied", "prose_redirect", "tool_on"] + (["plain_cot"] if PLAIN_COT else [])
-# "prose_only" (backtick ban) is available but off: ToRL and base answer the ban with unfenced code and loop.
+# Three conditions, same training prompt in all three; only what happens to code differs.
+CONDITIONS = ["tool_on", "env_denied", "no_code"] + (["plain_cot"] if PLAIN_COT else [])
+# Optional extras: "prompt_off" (no-code prompt), "assist_denied" (denial + compute-by-hand instruction),
+# "prose_redirect", "prose_only" (backtick ban alone: ToRL and base write unfenced code and loop).
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}{'-smoke' if SMOKE else ''}"
 OUT = f"{RUNS}/{RUN_ID}"
@@ -683,7 +686,8 @@ PLOT2 = r"""
 
 # Figure 1: within each model, what does turning the tool off cost?
 if df is not None:
-    an.plot(df, {t: [f"{t} {c}" for c in ("prompt_off", "env_denied", "assist_denied", "prose_only", "prose_redirect", "tool_on")]
+    an.plot(df, {t: [f"{t} {c}" for c in ("tool_on", "env_denied", "no_code", "prompt_off", "assist_denied",
+                                          "prose_only", "prose_redirect")]
                  for t in ("base", "text_rl", "tool_rl")},
             color="condition", title=f"{RUN_ID} / {SHOW}: pass@k within each model",
        save=f"{OUT}/figures/passk_by_model_{SHOW}_{STAMP}.png", caption=CAPTION);
@@ -698,6 +702,7 @@ if df is not None:
         ("promptoff", ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"], "told not to code"),
         ("prose",     ["tool_rl prose_only", "text_rl prose_only", "base prose_only", "base tool_on"], "no code possible"),
         ("redirect",  ["tool_rl prose_redirect", "text_rl prose_redirect", "base prose_redirect", "base tool_on"], "redirected to hand computation"),
+        ("nocode",    ["tool_rl no_code", "text_rl no_code", "base no_code", "base tool_on"], "no code possible"),
         ("assist",    ["tool_rl assist_denied", "text_rl assist_denied", "base assist_denied", "base tool_on"], "denied, told to compute by hand"),
         ("toolon",    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"], "with the tool"),
     ]:

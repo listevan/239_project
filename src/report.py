@@ -25,20 +25,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pandas as pd  # noqa: E402
 import analyze as an  # noqa: E402
 
-BY_MODEL = {t: [f"{t} {c}" for c in ("prompt_off", "env_denied", "assist_denied", "prose_only", "prose_redirect", "tool_on")]
+BY_MODEL = {t: [f"{t} {c}" for c in ("tool_on", "env_denied", "no_code", "prompt_off", "assist_denied",
+                                      "prose_only", "prose_redirect")]
             for t in ("base", "text_rl", "tool_rl")}
 # Three headline figures. Each tool-off one shows the three models under the same tool-off condition
 # plus the base with the tool on; the tool-on one is the dose check: are the two RL models comparable
 # when each has the interpreter?
 MAIN = {
     "denied":    ["tool_rl env_denied", "text_rl env_denied", "base env_denied", "base tool_on"],
+    "nocode":    ["tool_rl no_code", "text_rl no_code", "base no_code", "base tool_on"],
     "promptoff": ["tool_rl prompt_off", "text_rl prompt_off", "base prompt_off", "base tool_on"],
     "prose":     ["tool_rl prose_only", "text_rl prose_only", "base prose_only", "base tool_on"],
     "redirect":  ["tool_rl prose_redirect", "text_rl prose_redirect", "base prose_redirect", "base tool_on"],
     "assist":    ["tool_rl assist_denied", "text_rl assist_denied", "base assist_denied", "base tool_on"],
     "toolon":    ["tool_rl tool_on", "text_rl tool_on", "base tool_on"],
 }
-MAIN_TITLES = {"denied": "tool denied, tool-RL vs text-RL vs base",
+MAIN_TITLES = {"denied": "tool off (code not run), tool-RL vs text-RL vs base",
+               "nocode": "no code possible (ban + redirect), tool-RL vs text-RL vs base",
                "promptoff": "told not to code, tool-RL vs text-RL vs base",
                "prose": "no code possible, tool-RL vs text-RL vs base",
                "redirect": "redirected to hand computation, tool-RL vs text-RL vs base",

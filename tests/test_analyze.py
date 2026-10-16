@@ -49,7 +49,7 @@ def test_plot_by_model_panels_and_lines():
     assert len(fig.axes) == 3
     assert [ax.get_title(loc="left") for ax in fig.axes] == ["base", "text_rl", "tool_rl"]
     assert all(len(ax.get_lines()) == 3 for ax in fig.axes)
-    assert [l.get_label() for l in fig.axes[0].get_lines()] == ["base prompt_off", "base env_denied", "base tool_on"]
+    assert [l.get_label() for l in fig.axes[0].get_lines()] == ["base tool_on", "base env_denied", "base prompt_off"]
 
 
 def test_plot_main_default_arms_and_missing():

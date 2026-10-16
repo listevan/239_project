@@ -275,6 +275,30 @@ def test_verltool_template_and_boxed_grading():
     rec = gen.to_record(s, dict(id="x", answer="2"), "prompt_off", "t", "m", "base", grade)
     assert rec["correct"] and rec["correct_boxed"]
 
+def test_no_code_cuts_unfenced_program_and_keeps_ban():
+    a = args(max_calls=4)
+    calls = []
+
+    def generate(prompts, stops, budgets, seeds=None, biases=None):
+        calls.append((stops, biases))
+        outs = []
+        for p in prompts:
+            if p.count(gen.REDIRECT_TEXT) == 1:
+                outs.append(("Again:\n\\text{import", 4, "stop", "\\text{import"))   # code wrapped in LaTeX; vLLM ends at the stop
+            else:
+                outs.append(("12 * 13 = 156, so \\boxed{156}<|im_end|>", 8, "stop", "<|im_end|>"))
+        return outs
+
+    s = gen.Sample(0, 0, "P")
+    gen.advance(s, "Let's write Python code.\nimport ", 6, "stop", "\nimport ", "no_code", a.max_calls)
+    assert s.gen == "Let's write Python code.\n" + gen.REDIRECT_TEXT and s.n_calls == 1
+    pool = ThreadPoolExecutor(max_workers=1)
+    gen.run_tool_loop(generate, lambda t: len(t.split()), [s], "no_code", a, pool, fence_bias={7: -100.0})
+    pool.shutdown()
+    assert s.n_calls == 2 and "import" not in s.gen and gen.last_boxed(s.gen) == "156"
+    assert all(st == gen.TEXT_STOPS + list(gen.UNFENCED_CODE_STOPS) and bi == [{7: -100.0}] for st, bi in calls)
+    assert "no_code" in gen.CONDITIONS and "no_code" not in gen.SHARED_PROMPT_CONDITIONS
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
