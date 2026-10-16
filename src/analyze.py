@@ -344,6 +344,43 @@ def plot(df: pd.DataFrame, lines, title=None, color="model", ci=True, iters=300,
     return fig
 
 
+def best_case(df: pd.DataFrame, cond: str, iters: int = 4000, seed: int = 0) -> pd.DataFrame:
+    """pass@1 contrasts on the samples that are reasoning rather than artifacts, paired by problem.
+      as run              every sample
+      no early stops      drops samples that ended before the cap without an answer (a VerlTool training
+                          artifact, 20-31% of the tool checkpoint's samples, 2-4% of base's)
+      no early stops, no code   also drops samples with unfenced code (only for code-free conditions)
+    The last view is selected by the models themselves, so it is a best-case bound, not an estimate.
+    Returns one row per (view, contrast) with mean, 95% bootstrap CI, two-sided p and kept shares."""
+    d = df[df.condition == cond].copy()
+    if d.empty or "base" not in set(d.tag):
+        return pd.DataFrame()
+    d["_early"] = ~d.boxed_present.astype(bool) & ~d.truncated.astype(bool)
+    d["_code"] = d.text.map(lambda t: bool(CODE_LIKE.search(t or ""))) if "text" in d else False
+    views = {"as run": d, "no early stops": d[~d._early]}
+    if cond not in ("tool_on", "env_denied"):
+        views["no early stops, no code"] = d[~d._early & ~d._code]
+    tags = [t for t in ROLE_ORDER if t in set(d.tag)]
+    pairs = [(a, "base") for a in tags if a != "base"] + ([("tool_rl", "text_rl")] if {"tool_rl", "text_rl"} <= set(tags) else [])
+    rng = np.random.default_rng(seed)
+    rows = []
+    for vname, v in views.items():
+        acc = {t: v[v.tag == t].groupby("problem_id").correct.mean() for t in tags}
+        kept = {t: len(v[v.tag == t]) / max(1, len(d[d.tag == t])) for t in tags}
+        for a_, b_ in pairs:
+            ids = acc[a_].index.intersection(acc[b_].index)
+            diff = (acc[a_].loc[ids] - acc[b_].loc[ids]).to_numpy(dtype=float)
+            if len(diff) == 0:
+                continue
+            boots = rng.choice(diff, size=(iters, len(diff)), replace=True).mean(axis=1)
+            rows.append(dict(view=vname, contrast=f"{a_} - {b_}", diff=round(float(diff.mean()), 3),
+                             lo=round(float(np.percentile(boots, 2.5)), 3), hi=round(float(np.percentile(boots, 97.5)), 3),
+                             p=round(min(1.0, 2 * min((boots <= 0).mean(), (boots >= 0).mean())), 3), problems=len(ids),
+                             **{f"pass1_{a_}": round(float(acc[a_].mean()), 3), f"pass1_{b_}": round(float(acc[b_].mean()), 3),
+                                f"kept_{a_}": round(kept[a_], 2), f"kept_{b_}": round(kept[b_], 2)}))
+    return pd.DataFrame(rows)
+
+
 def _holm(ps):
     """Holm step-down adjusted p-values for a list of p-values (NaN stays NaN)."""
     idx = [i for i, p in enumerate(ps) if p == p]

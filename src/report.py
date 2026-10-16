@@ -116,6 +116,10 @@ def report_dataset(run_dir, dataset, ci=True, grade_first=True, workers=None, ye
         print(f"{name}:\n{t.to_string(index=False)}\n")
     for cond in sorted(set(df.condition), key=lambda c: (an.cond_rank(c), c)):
         an.verdict(df, cond)
+        bc = an.best_case(df, cond)
+        if not bc.empty:
+            print(f"  best case, pass@1 on the samples that are reasoning rather than artifacts (an upper bound):")
+            print("    " + bc[["view", "contrast", "diff", "lo", "hi", "p"]].to_string(index=False).replace("\n", "\n    "))
         print()
 
     outs = outputs(df, dataset, stamp, figs_dir, tabs_dir)

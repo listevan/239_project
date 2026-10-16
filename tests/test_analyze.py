@@ -164,6 +164,18 @@ def test_verdict_wording():
     assert "text_rl rose above base and tool_rl did not" in out and "tool-specific cost" not in out
     assert an._holm([0.01, 0.04, float("nan")])[:2] == [0.02, 0.04] and an._describe(float("nan"), 0, 0, 0.01) == "no data"
 
+def test_best_case():
+    df = synth(n_problems=10)
+    df["text"] = "plain prose"
+    df.loc[df.index % 7 == 0, "text"] = "import sympy as sp"      # some code-like samples
+    df.loc[df.index % 5 == 0, "boxed_present"] = False             # some early stops (not truncated)
+    bc = an.best_case(df, "no_code", iters=200)
+    assert set(bc.view) == {"as run", "no early stops", "no early stops, no code"}
+    assert set(bc.contrast) == {"tool_rl - base", "text_rl - base", "tool_rl - text_rl"}
+    row = bc[(bc.view == "no early stops, no code") & (bc.contrast == "tool_rl - base")].iloc[0]
+    assert 0 < row.kept_tool_rl < 1 and row.lo <= row["diff"] <= row.hi
+    assert set(an.best_case(df, "tool_on", iters=100).view) == {"as run", "no early stops"}
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
