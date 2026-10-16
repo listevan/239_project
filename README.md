@@ -41,21 +41,15 @@ three models alike, and the report lists each problem's year (`subject`) for a c
 
 ## Pilot gates
 
-Each stage runs only if the one before passes; numbers are pass@k on graded samples.
+Each stage runs only if the one before passes; numbers are pass@k with strict boxed grading.
 
-1. **The tool matters** for tool_rl (tool_on far above env_denied and no_code).
-   Passed 2026-10-16: AIME pass@64 0.47 on vs 0.24 off; 56 vs 29 of 120 problems
-   solved at least once; OlymMATH-Easy 0.48 vs 0.22.
-2. **Main comparison**, base and text_rl on AIME x 16 against tool_rl at pass@16:
-   positive control (tool_rl above base with the tool on), then tool_rl vs base with
-   the tool off, then text_rl `no_code` for attribution. Also check base's no_code
-   code-attempt rate and its unfinished-without-answer rate against tool_rl's.
-3. **Scale** (64 samples, OlymMATH-Easy) only if stage 2 is too close to call.
-
-Known stage-1 issues: 23% of tool_rl's no_code samples still write unfenced code
-(the ban blocks fences, but banned words are spelled through other token splits),
-and 20 to 30% of tool_rl samples stop mid-sentence without an answer before the
-token cap. Both are reported per arm; neither changes the stage-1 gate.
+1. **The tool matters** for tool_rl (tool_on far above env_denied and no_code). Passed:
+   AIME pass@64 0.47 on vs 0.24 off.
+2. **Positive control: tool_rl beats base with the tool.** FAILED for the VerlTool 360-step
+   checkpoint (pass@1 .163 vs .157, pass@16 .372 vs .392, inconclusive). Gate 1 could not catch
+   this, because the interpreter helps base by about 10 points too. Its tool-off scores are
+   therefore not a test of atrophy. Details and every audit finding: docs/audit_2026-10-16.md.
+3. Main comparison and scale-up: on hold until a tool checkpoint passes gate 2.
 
 ## Layout
 
