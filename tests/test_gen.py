@@ -142,6 +142,9 @@ def test_dataset_specs_and_loaders():
             ("math-ai/aime25", None, "test"): [dict(id=0, problem="Q0", answer="70")],
             ("RUC-AIBOX/OlymMATH", "en-easy", "test"): [dict(unique_id="e1", problem="O1", answer="\\frac{1}{2}", subject="Algebra")],
             ("math-ai/amc23", None, "test"): [dict(id=3, question="A3", answer="3159", url="u")],
+            ("rawsh/2024_AMC12", None, "train"): [dict(exam="2024 AMC 12A", problem_number=1, problem="P1", answer="2"),
+                                                  dict(exam="2024 AMC 12B", problem_number=7, problem="P7", answer="D"),
+                                                  dict(exam="2024 AMC 12B", problem_number=9, problem="P9", answer="\\frac{1}{2}")],
             ("HuggingFaceH4/MATH-500", None, "test"): [dict(unique_id=f"m{i}", problem=f"M{i}", answer="1", subject="Algebra",
                                                             level=i) for i in range(1, 6)]}
     mod = types.ModuleType("datasets")
@@ -156,6 +159,7 @@ def test_dataset_specs_and_loaders():
         assert o == [dict(id="olymmath-e1", problem="O1", answer="\\frac{1}{2}", subject="Algebra", level="olymmath-easy")]
         assert len(gen.load_problems("aime_all", 2, 0)) == 2
         assert gen.load_problems("amc23", 0, 0) == [dict(id="amc23-3", problem="A3", answer="3159", subject="amc23", level="amc")]
+        assert [(x["id"], x["answer"]) for x in gen.load_problems("amc24", 0, 0)] == [("amc24A-1", "2"), ("amc24B-9", "\\frac{1}{2}")]
         assert [x["level"] for x in gen.load_problems("math500_l35", 0, 0)] == ["3", "4", "5"]
         assert len(gen.load_problems("math500", 0, 0)) == 5
     finally:

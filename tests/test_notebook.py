@@ -53,11 +53,11 @@ def test_config_cell():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = "), "config", "exec"), ns)
-        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "amc23:30:4"
+        assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "amc24:30:4"
         assert ns["RUN_ID"].endswith("_torl-1.5b")
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "no_code", "plain"],
-                                              "base": ["tool_on", "env_denied", "no_code", "plain"], "text_rl": ["plain"]}
+        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "plain"],
+                                              "base": ["tool_on", "env_denied", "plain"], "text_rl": []}
         assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "text_rl": "qwen_math_tir"}
         assert cfg["models"]["tool_rl"] == "GAIR/ToRL-1.5B"
         src = cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace(
@@ -125,6 +125,14 @@ def test_stream_output_and_interrupt():
         else:
             raise AssertionError(f"pid {p} still alive after interrupt")
 
+
+def test_model_without_arms_is_skipped():
+    ns = setup_ns("/nonexistent")
+    ns["CONDITIONS_BY_MODEL"] = {"tool_rl": ["tool_on"], "base": ["tool_on"], "text_rl": []}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ns["run_model"]("text_rl")
+    assert "no arms configured" in buf.getvalue()
 
 if __name__ == "__main__":
     fails = 0

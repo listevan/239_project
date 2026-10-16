@@ -191,7 +191,23 @@ def _load_amc23():
                  level="amc") for r in load_dataset("math-ai/amc23", split="test")]
 
 
-DATASETS = {"amc23": _load_amc23, "aime_all": _load_aime_all, "olymmath_easy": _load_olymmath_easy,
+def _load_amc24():
+    """AMC 12 2024, contests A and B (rawsh/2024_AMC12), 45 problems with the answer as a value; the one
+    stored only as a letter is skipped. Held in November 2024, after Qwen2.5-Math was released, so the base
+    model cannot have seen them."""
+    from datasets import load_dataset  # type: ignore
+    out = []
+    for r in load_dataset("rawsh/2024_AMC12", split="train"):
+        ans = str(r["answer"]).strip()
+        if re.fullmatch(r"[A-E]", ans):
+            continue
+        exam = "A" if r["exam"].strip().endswith("A") else "B"
+        out.append(dict(id=f"amc24{exam}-{r['problem_number']}", problem=r["problem"], answer=ans,
+                        subject=f"amc24{exam}", level="amc"))
+    return out
+
+
+DATASETS = {"amc24": _load_amc24, "amc23": _load_amc23, "aime_all": _load_aime_all, "olymmath_easy": _load_olymmath_easy,
             "math500": _load_math500, "math500_l35": lambda: _load_math500((3, 4, 5))}
 
 

@@ -35,17 +35,21 @@ checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 
 | model | arms | |
 |---|---|---|
-| `tool_rl` | all four | GAIR/ToRL-1.5B, RL with the interpreter |
-| `base` | all four | Qwen2.5-Math-1.5B, untrained |
-| `text_rl` | `plain` | Oat-Zero, RL without a tool (different recipe): attribution only |
+| `tool_rl` | `tool_on`, `env_denied`, `plain` | GAIR/ToRL-1.5B, RL with the interpreter |
+| `base` | `tool_on`, `env_denied`, `plain` | Qwen2.5-Math-1.5B, untrained |
+| `text_rl` | none for now | Oat-Zero, RL without a tool: add `plain` only if tool_rl lands below base |
+
+(`no_code` keeps the code-inviting prompt and leaks unfenced code in about 40% of samples, so the pilot uses
+`plain` as the tool-free measure.)
 
 **Read in order:** `tool_on` first (positive control: tool_rl must beat base with the
 tool), then tool_rl vs base with the tool off (below base = atrophy), then text_rl
 `plain` for whether any gap belongs to the tool.
 
-**Pilot size:** AMC 2023, 30 problems x 4 samples (pass@1 to pass@4), 9 arms, about
-20 minutes. Problems where computation helps but insight is still needed, and base
-already solves a fair share.
+**Pilot size:** AMC 12 2024, 30 problems x 4 samples (pass@1 to pass@4), 6 arms, about
+15 minutes. Problems where computation helps but insight is still needed, base already
+solves a fair share, and the contests (November 2024) postdate Qwen2.5-Math, so the base
+model cannot have memorised them.
 
 **Run:** cells 1 to 6, then the three model cells. Then on the laptop:
 `uv run src/report.py --run <run id>`.
@@ -120,13 +124,14 @@ TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plai
     "text_rl": "qwen_math_tir",
 }
 CONDITIONS_BY_MODEL = {
-    "tool_rl": ["tool_on", "env_denied", "no_code", "plain"],
-    "base":    ["tool_on", "env_denied", "no_code", "plain"],
-    "text_rl": ["plain"],
+    "tool_rl": ["tool_on", "env_denied", "plain"],
+    "base":    ["tool_on", "env_denied", "plain"],
+    "text_rl": [],               # attribution, only needed if tool_rl lands below base: then ["plain"]
 }
 SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
-# Pilot: one set, ~30 problems, pass@1..4. AMC 2023: computation helps, insight is still needed.
-DATASETS = {"amc23": (6, 2)} if SMOKE else {"amc23": (30, 4)}   # (problems, samples)
+# Pilot: one set, ~30 problems, pass@1..4. AMC 12 2024: computation helps, insight is still needed, and it
+# postdates the base model.
+DATASETS = {"amc24": (6, 2)} if SMOKE else {"amc24": (30, 4)}   # (problems, samples)
 MAX_TOKENS = 1024 if SMOKE else 3000
 MAX_MODEL_LEN = 4096
 TEMPERATURE, TOP_P, SEED = 0.6, 0.95, 0
@@ -263,6 +268,9 @@ def stream(cmd):
 
 
 def run_model(tag):
+    if not CONDITIONS_BY_MODEL.get(tag):
+        print(f"[{tag}] no arms configured in CONDITIONS_BY_MODEL; skipped")
+        return
     print(f"[{tag}] {MODELS[tag]}  ->  {OUT}")
     print(f"[{tag}] datasets {DATASET_SPEC}; conditions {', '.join(CONDITIONS_BY_MODEL[tag])}")
     if status(tag) == 0 and not OVERWRITE:
