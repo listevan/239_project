@@ -139,7 +139,8 @@ MAX_CALLS = 4
 GPU_MEM = 0.90
 CHUNK = 100                    # problems per checkpoint
 OVERWRITE = False              # False: only missing arms. True: redo all. ["no_code"]: redo those conditions only.
-RUN_ID = None                  # None: today's date + preset. Set an existing id to resume or extend a run.
+RUN_ID = "2026-10-16_torl-1.5b"   # the AMC24 pilot: its 4 tool arms are done, only plain reruns. None: today's
+                                 # date + preset (a new run). An existing id resumes or extends that run.
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}"
