@@ -137,10 +137,14 @@ PRESETS = {
         run_id="2026-10-16_numina-7b",
         models={"base": "AI-MO/NuminaMath-7B-CoT", "tool_sft": "AI-MO/NuminaMath-7B-TIR"},
         templates={"base": "numina", "tool_sft": "numina"},
+        # their tokenizer_config names LlamaTokenizer for a byte-level BPE, which decodes spaces and newlines as
+        # "Ġ" and "Ċ" (the first run was garbled); load their tokenizer.json as a generic fast tokenizer instead
+        tokenizer_json=True,
         conditions={"base": ["tool_on", "env_denied", "no_code"], "tool_sft": ["tool_on", "env_denied", "no_code"]}),
 }
 PRESET = "numina-7b"
 MODELS, TEMPLATES, CONDITIONS_BY_MODEL = (PRESETS[PRESET][k] for k in ("models", "templates", "conditions"))
+TOKENIZER_JSON = PRESETS[PRESET].get("tokenizer_json", False)   # load tokenizer.json as a generic fast tokenizer
 SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
 # Pilot: one set, ~30 problems, pass@1..4. MATH-500 level 5 minus ToRL's training overlap (124 problems);
 # the AMC 12 2024 pilot (amc24) left base too weak tool-free (.175).
@@ -166,12 +170,13 @@ print("this run     :", RUN_ID, "(resuming)" if RUN_ID in existing else "(new)")
 print("datasets     :", ", ".join(f"{k} {p or 'all'} problems x {n} samples" for k, (p, n) in DATASETS.items()))
 print("arms         :", "; ".join(f"{t}: {', '.join(c)}" for t, c in CONDITIONS_BY_MODEL.items()))
 os.makedirs(OUT, exist_ok=True)
-CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, templates=TEMPLATES, conditions_by_model=CONDITIONS_BY_MODEL,
+CONFIG = dict(run_id=RUN_ID, preset=PRESET, models=MODELS, templates=TEMPLATES, tokenizer_json=TOKENIZER_JSON,
+              conditions_by_model=CONDITIONS_BY_MODEL,
               datasets=DATASETS, max_tokens=MAX_TOKENS, max_model_len=MAX_MODEL_LEN, temperature=TEMPERATURE,
               top_p=TOP_P, seed=SEED, max_calls=MAX_CALLS, chunk=CHUNK,
               created=datetime.datetime.now().isoformat(timespec="seconds"))
 cfg_path = f"{OUT}/config.json"
-KEYS = ("models", "templates", "conditions_by_model", "datasets", "max_tokens", "max_model_len", "temperature",
+KEYS = ("models", "templates", "tokenizer_json", "conditions_by_model", "datasets", "max_tokens", "max_model_len", "temperature",
         "top_p", "seed", "max_calls")
 old = json.load(open(cfg_path)) if os.path.exists(cfg_path) else None
 diff = [k for k in KEYS if old and json.dumps(old.get(k), sort_keys=True) != json.dumps(CONFIG[k], sort_keys=True)]
@@ -296,6 +301,8 @@ def run_model(tag):
                "--max-tokens", str(MAX_TOKENS), "--max-model-len", str(MAX_MODEL_LEN),
                "--temperature", str(TEMPERATURE), "--top-p", str(TOP_P), "--seed", str(SEED),
                "--max-calls", str(MAX_CALLS), "--gpu-mem", str(GPU_MEM), "--chunk", str(CHUNK), "--out", OUT]
+        if globals().get("TOKENIZER_JSON"):
+            cmd.append("--tokenizer-json")
         if OVERWRITE is True:
             cmd.append("--overwrite")
         elif OVERWRITE:

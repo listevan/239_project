@@ -25,6 +25,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,38 @@ TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:", "\n### Problem:"]
 # so the strings above never fire on them: they must also be stop token ids. Without this a base model
 # that ends its turn with <|im_end|> runs on (only <|endoftext|> is its eos) into junk until the cap.
 END_TOKENS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>", "</s>")
+
+
+ROUND_TRIP_PROBE = "Let x = 2.\n```python\nprint(x ** 2)\n```\nso \\boxed{4}."
+
+
+def round_trip_error(tok):
+    """None if decode(encode(text)) gives the text back, else what went wrong. A tokenizer whose class does not
+    match its files (NuminaMath's config says LlamaTokenizer for a byte-level BPE) decodes spaces and newlines as
+    the markers "Ġ" and "Ċ", which silently breaks stop strings, code blocks and grading."""
+    if not hasattr(tok, "decode"):
+        return None
+    ids = tok(ROUND_TRIP_PROBE, add_special_tokens=False)["input_ids"]
+    back = tok.decode(ids, skip_special_tokens=True)
+    if back.strip() == ROUND_TRIP_PROBE.strip():
+        return None
+    return f"tokenizer does not round-trip text: {ROUND_TRIP_PROBE!r} came back as {back!r}"
+
+
+def generic_tokenizer_dir(repo: str) -> str:
+    """A local tokenizer folder holding `repo`'s tokenizer.json behind a generic fast-tokenizer config, for repos
+    whose tokenizer_config names a class that decodes their vocabulary wrongly (NuminaMath: LlamaTokenizer on a
+    byte-level BPE). Same vocabulary and ids; the tokenizer.json's own decoder and BOS handling are used."""
+    from huggingface_hub import hf_hub_download  # type: ignore
+    src_cfg = json.loads(Path(hf_hub_download(repo, "tokenizer_config.json")).read_text())
+    out = Path(tempfile.gettempdir()) / ("tokenizer_" + repo.replace("/", "_"))
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(hf_hub_download(repo, "tokenizer.json"), out / "tokenizer.json")
+    content = lambda v: v.get("content") if isinstance(v, dict) else v
+    cfg = {"tokenizer_class": "PreTrainedTokenizerFast", "bos_token": content(src_cfg.get("bos_token")),
+           "eos_token": content(src_cfg.get("eos_token"))}
+    (out / "tokenizer_config.json").write_text(json.dumps(cfg))
+    return str(out)
 
 
 def end_token_ids(tok):
@@ -458,7 +491,8 @@ def settings_fp(args, n, template=None):
     """Short fingerprint of everything that shapes a sample; checkpoints only resume under the same one."""
     keys = dict(model=args.model, template=template or args.template, temperature=args.temperature, top_p=args.top_p,
                 max_tokens=args.max_tokens, max_model_len=args.max_model_len, max_calls=args.max_calls,
-                exec_timeout=args.exec_timeout, seed=args.seed, n=n, end_tokens=END_TOKENS)
+                exec_timeout=args.exec_timeout, seed=args.seed, n=n, end_tokens=END_TOKENS,
+                tokenizer=getattr(args, "tokenizer", None), tokenizer_json=getattr(args, "tokenizer_json", False))
     return hashlib.sha1(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:10]
 
 
@@ -557,6 +591,11 @@ def parse_args(argv=None):
     p.add_argument("--tag", required=True, help="role label: base | tool_rl | text_rl")
     p.add_argument("--conditions", default=",".join(CONDITIONS), help=f"comma list from {', '.join(CONDITIONS)}")
     p.add_argument("--template", default="verltool_torl", choices=sorted(TEMPLATES))
+    p.add_argument("--tokenizer", default=None,
+                   help="load this tokenizer instead of the model's own (same vocabulary, working decoder)")
+    p.add_argument("--tokenizer-json", action="store_true",
+                   help="load the tokenizer's tokenizer.json as a generic fast tokenizer, ignoring the class its "
+                        "tokenizer_config names (for repos where that class decodes wrongly)")
     p.add_argument("--dataset", default="aime_all",
                    help=f"comma list of name[:n_problems[:n_samples]]; names: {', '.join(DATASETS)}. "
                         "The model is loaded once for all of them.")
@@ -617,9 +656,16 @@ def main(argv=None):
     from vllm import LLM, SamplingParams  # type: ignore
     dtype = "bfloat16" if torch.cuda.get_device_capability()[0] >= 8 else "float16"
     t0 = time.time()
-    llm = LLM(model=args.model, dtype=dtype, max_model_len=args.max_model_len, seed=args.seed,
-              gpu_memory_utilization=args.gpu_mem, enable_prefix_caching=True)
+    tok_src = args.tokenizer or args.model
+    if args.tokenizer_json:
+        tok_src = generic_tokenizer_dir(tok_src)
+    llm = LLM(model=args.model, tokenizer=tok_src, dtype=dtype, max_model_len=args.max_model_len,
+              seed=args.seed, gpu_memory_utilization=args.gpu_mem, enable_prefix_caching=True)
     tok = llm.get_tokenizer()
+    bad = round_trip_error(tok)
+    if bad:
+        sys.exit(f"{args.model}: {bad}. Every stop string, code block and grade would be wrong; pass --tokenizer "
+                 "with a tokenizer of the same vocabulary that decodes correctly.")
     print(f"loaded {args.model} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
     ban = {i: BAN_BIAS for i in code_token_ids(tok)}
     end_ids = end_token_ids(tok)

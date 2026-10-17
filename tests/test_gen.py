@@ -202,6 +202,22 @@ def test_audit_fixes_in_helpers():
     assert gen.advance(s2, "plain ending", 2, "stop", None, "env_denied", 4) is None and s2.finish == "eos"
 
 
+def test_round_trip_error():
+    class Tok:
+        def __init__(self, broken):
+            self.broken = broken
+
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": list(text)}
+
+        def decode(self, ids, skip_special_tokens=True):
+            s = "".join(ids)
+            return s.replace(" ", "\u0120").replace("\n", "\u010a") if self.broken else s
+    assert gen.round_trip_error(Tok(False)) is None
+    assert "round-trip" in gen.round_trip_error(Tok(True))
+    assert gen.round_trip_error(SimpleNamespace()) is None   # no decode: nothing to check
+
+
 def test_end_token_ids():
     # special end-of-turn tokens must be stop ids: vLLM drops them from the text, so stop strings miss them
     tok = SimpleNamespace(get_vocab=lambda: {"<|endoftext|>": 151643, "<|im_end|>": 151645, "<|im_start|>": 151644,
