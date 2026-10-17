@@ -461,7 +461,7 @@ def verdict(df: pd.DataFrame, cond: str = "no_code", iters: int = 2000):
             m, lo, hi = res[(t, "base", kmax)][:3]
             msg = (f"inconclusive: no difference detected (pass@{kmax} {m:+.3f} [{lo:+.3f}, {hi:+.3f}]); "
                    "this is not evidence of no erosion")
-        print(f"  -> erosion test ({t} vs untrained base): " + msg)
+        print(f"  -> erosion test ({t} vs base): " + msg)
     if cond == "tool_on" or not {"text_rl", "tool_rl"} <= tags:
         return res
     t1, tk = calls["tool_rl"]

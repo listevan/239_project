@@ -29,10 +29,10 @@ import pandas as pd  # noqa: E402
 import analyze as an  # noqa: E402
 
 COMPARE_TITLES = {
-    "no_code": "no code possible: tool-RL vs base (main test), text-RL for attribution",
-    "env_denied": "tool off, code not run: tool-RL vs base (main test)",
-    "tool_on": "tool on: tool-RL vs base (positive control)",
-    "plain": "bare question, code banned: tool-RL vs base (main test)",
+    "no_code": "same prompt, code blocked: tool model vs base (main test)",
+    "env_denied": "tool off, code not run: tool model vs base (main test)",
+    "tool_on": "tool on: tool model vs base (positive control)",
+    "plain": "bare question, code banned: tool model vs base (main test)",
 }
 
 

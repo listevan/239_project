@@ -54,14 +54,12 @@ def test_config_cell():
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = "), "config", "exec"), ns)
         assert ns["SMOKE"] is False and ns["DATASET_SPEC"] == "math500_l5:30:4"
-        assert ns["RUN_ID"].endswith("_torl-1.5b")
+        assert ns["RUN_ID"].endswith("_numina-7b")
         cfg = json.load(open(Path(ns["OUT"]) / "config.json"))
-        assert cfg["conditions_by_model"] == {"tool_rl": ["tool_on", "env_denied", "plain"],
-                                              "base": ["tool_on", "env_denied", "plain"],
-                                              "tool_sft": ["tool_on", "env_denied", "plain"], "text_rl": []}
-        assert cfg["templates"] == {"tool_rl": "torl", "base": "qwen_math_tir", "tool_sft": "verltool_sft",
-                                    "text_rl": "qwen_math_tir"}
-        assert cfg["models"]["tool_rl"] == "GAIR/ToRL-1.5B"
+        assert cfg["conditions_by_model"] == {"base": ["tool_on", "env_denied", "no_code"],
+                                              "tool_sft": ["tool_on", "env_denied", "no_code"]}
+        assert cfg["templates"] == {"base": "numina", "tool_sft": "numina"}
+        assert cfg["models"] == {"base": "AI-MO/NuminaMath-7B-CoT", "tool_sft": "AI-MO/NuminaMath-7B-TIR"}
         src = cell("DATASET_SPEC = ").replace("RUN_ID = None", f'RUN_ID = "{ns["RUN_ID"]}"').replace(
             "MAX_TOKENS = 1024 if SMOKE else 3000", "MAX_TOKENS = 999")
         with contextlib.redirect_stdout(buf):
@@ -72,7 +70,7 @@ def test_config_cell():
         with contextlib.redirect_stdout(buf):
             exec(compile(cell("DATASET_SPEC = ").replace("SMOKE = False", "SMOKE = True"), "config", "exec"),
                  dict(RUNS=str(runs)))
-        assert "_torl-1.5b-smoke (new)" in buf.getvalue()   # smoke never writes into the real run
+        assert "_numina-7b-smoke (new)" in buf.getvalue()   # smoke never writes into the real run
 
 
 def test_arm_files_status_and_show():

@@ -41,6 +41,12 @@ Why `tool_sft`: SFT on tool traces is known to cut tool-free accuracy (Cheng et 
 does not. Untested: whether telling the model there is no interpreter (`env_denied`) or blocking code
 (`plain`) recovers it, i.e. whether the drop is a habit or lost skill.
 
+Second experiment (`numina-7b` preset): AI-MO/NuminaMath-7B-TIR vs AI-MO/NuminaMath-7B-CoT. The TIR model is
+the CoT model plus one SFT stage on tool-integrated solutions only (model card), so tool training is the
+single difference; both use DeepSeekMath-7B underneath, not Qwen. Same `### Problem: ... ### Solution:` prompt
+in every condition; tool-free arm is `no_code` (that prompt, code blocked). The VerlTool 1.5B SFT model was
+dropped: its answers (R1-style, about 3,000+ tokens) do not fit its 4K context (73 to 88% cut off).
+
 ## Pilot gates
 
 Each stage runs only if the one before passes; numbers are pass@k with strict boxed grading.

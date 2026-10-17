@@ -71,6 +71,8 @@ TEMPLATES = {
         "above, and put your final answer within \\boxed{}.\n<|im_end|>\n<|im_start|>user\n{q}<|im_end|>\n"
         "<|im_start|>assistant\n"
     ),
+    # AI-MO/NuminaMath-7B-CoT and -TIR: their chat template (identical for both), rendered for one user turn
+    "numina": "### Problem: {q}\n### Solution: ",
     # the bare question: the best prompt for Qwen2.5-Math base (Liu et al. 2025, arXiv 2503.20783, Table 1:
     # Qwen2.5-Math-1.5B AMC 43.4 with no template vs 32.5 with qwen_math_cot, greedy, 3000 tokens, boxed-only
     # grading). The chat wrapper makes base derail and loop.
@@ -92,7 +94,7 @@ DENIAL_BUDGET = ("Tool call budget exceeded; the code was not executed. "
 STOP_FENCE = "```\n"       # end of any fenced block
 STOP_OUTPUT = "```output"  # the model opens the output block itself
 TOOL_STOPS = (STOP_FENCE, STOP_OUTPUT)
-TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:"]
+TEXT_STOPS = ["<|im_end|>", "<|endoftext|>", "\nUser:", "\n### Problem:"]
 # End-of-turn tokens are special tokens, which vLLM strips from the text before matching stop strings,
 # so the strings above never fire on them: they must also be stop token ids. Without this a base model
 # that ends its turn with <|im_end|> runs on (only <|endoftext|> is its eos) into junk until the cap.

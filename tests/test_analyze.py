@@ -90,7 +90,7 @@ def test_verdict():
     out = buf.getvalue()
     first = [l for l in out.splitlines() if " - " in l and "pass@" in l][0]
     assert "tool_rl - base" in first
-    assert "erosion test (tool_rl vs untrained base)" in out and "attribution (vs text_rl)" in out
+    assert "erosion test (tool_rl vs base)" in out and "attribution (vs text_rl)" in out
     assert "positive control" in out and "Holm-adjusted" in out
     env = out.split("[env_denied]")[1]
     assert "attribution" not in env                    # no text_rl env_denied arm: base-only readout

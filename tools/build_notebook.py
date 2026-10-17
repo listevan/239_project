@@ -43,6 +43,11 @@ checkpoints from Qwen2.5-Math-1.5B, four ways of handling code:
 (`no_code` keeps the code-inviting prompt and leaks unfenced code in about 40% of samples, so the pilot uses
 `plain` as the tool-free measure.)
 
+**Presets** (cell 5, `PRESET`): `torl-1.5b` is the table above (done). `numina-7b` (current) compares
+NuminaMath-7B-CoT (`base`) with NuminaMath-7B-TIR (`tool_sft`), which is the CoT model plus one SFT stage on
+tool-integrated solutions; both get the same `### Problem:` prompt, and `no_code` is the tool-free arm.
+Run `run_model("base")` and `run_model("tool_sft")`; the other run cells skip.
+
 **Read in order:** `tool_on` first (positive control: each tool model must beat base with
 the tool), then each tool model vs base with the tool off (below base = atrophy), then text_rl
 `plain` for whether any gap belongs to the tool. For tool_sft, compare `env_denied` with `plain`:
@@ -115,25 +120,27 @@ print(subprocess.run(["git", "log", "-1", "--format=%h  %s  (%cr)"], capture_out
 CONFIG = r"""
 # 5. Configure
 import datetime, json, os
-PRESET = "torl-1.5b"
-MODELS = {
-    "tool_rl": "GAIR/ToRL-1.5B",                  # RL with a code interpreter; beats base with the tool
-    "base":    "Qwen/Qwen2.5-Math-1.5B",          # the untrained start
-    "tool_sft": "VerlTool/Qwen2.5-Math-1.5B-TIR-SFT-new",  # SFT on interpreter traces (OpenMathReasoning TIR)
-    "text_rl": "sail/Qwen2.5-Math-1.5B-Oat-Zero", # RL without a tool (different recipe): attribution only
+PRESETS = {
+    # RL (ToRL) and SFT (VerlTool) tool models vs their untrained start, Qwen2.5-Math-1.5B. Done 2026-10-16:
+    # ToRL no atrophy; the VerlTool SFT model writes answers too long for its 4K context (unusable).
+    "torl-1.5b": dict(
+        run_id="2026-10-16_torl-1.5b",
+        models={"tool_rl": "GAIR/ToRL-1.5B", "base": "Qwen/Qwen2.5-Math-1.5B",
+                "tool_sft": "VerlTool/Qwen2.5-Math-1.5B-TIR-SFT-new", "text_rl": "sail/Qwen2.5-Math-1.5B-Oat-Zero"},
+        templates={"tool_rl": "torl", "base": "qwen_math_tir", "tool_sft": "verltool_sft", "text_rl": "qwen_math_tir"},
+        conditions={"tool_rl": ["tool_on", "env_denied", "plain"], "base": ["tool_on", "env_denied", "plain"],
+                    "tool_sft": ["tool_on", "env_denied", "plain"], "text_rl": []}),
+    # SFT tool training, before and after: NuminaMath-7B-TIR is NuminaMath-7B-CoT plus one more SFT stage on
+    # tool-integrated solutions only (model card). One prompt (their chat template) in every condition, so
+    # the tool-free arm is no_code (same prompt, code blocked) rather than the bare question.
+    "numina-7b": dict(
+        run_id="2026-10-16_numina-7b",
+        models={"base": "AI-MO/NuminaMath-7B-CoT", "tool_sft": "AI-MO/NuminaMath-7B-TIR"},
+        templates={"base": "numina", "tool_sft": "numina"},
+        conditions={"base": ["tool_on", "env_denied", "no_code"], "tool_sft": ["tool_on", "env_denied", "no_code"]}),
 }
-TEMPLATES = {   # each model's tool prompt (tool_on, env_denied, no_code); "plain" always uses the bare question
-    "tool_rl": "torl",            # ToRL's own raw prompt (paper Fig. 3)
-    "base":    "qwen_math_tir",   # the Qwen2.5-Math tool-integrated prompt
-    "tool_sft": "verltool_sft",   # the system prompt of its SFT data, verbatim
-    "text_rl": "qwen_math_tir",
-}
-CONDITIONS_BY_MODEL = {
-    "tool_rl": ["tool_on", "env_denied", "plain"],
-    "base":    ["tool_on", "env_denied", "plain"],
-    "tool_sft": ["tool_on", "env_denied", "plain"],
-    "text_rl": [],               # attribution, only needed if tool_rl lands below base: then ["plain"]
-}
+PRESET = "numina-7b"
+MODELS, TEMPLATES, CONDITIONS_BY_MODEL = (PRESETS[PRESET][k] for k in ("models", "templates", "conditions"))
 SMOKE = False                  # True: 6 problems x 2 samples x 1024 tokens, a wiring check in its own folder
 # Pilot: one set, ~30 problems, pass@1..4. MATH-500 level 5 minus ToRL's training overlap (124 problems);
 # the AMC 12 2024 pilot (amc24) left base too weak tool-free (.175).
@@ -145,8 +152,7 @@ MAX_CALLS = 4
 GPU_MEM = 0.90
 CHUNK = 100                    # problems per checkpoint
 OVERWRITE = False              # False: only missing arms. True: redo all. ["no_code"]: redo those conditions only.
-RUN_ID = "2026-10-16_torl-1.5b"   # same run as the AMC24 pilot; each dataset gets its own folder in it. None:
-                                 # today's date + preset (a new run). An existing id resumes or extends that run.
+RUN_ID = PRESETS[PRESET]["run_id"]   # each preset has its own run folder; each dataset a subfolder in it
 
 DATASET_SPEC = ",".join(f"{k}:{p}:{n}" for k, (p, n) in DATASETS.items())
 RUN_ID = RUN_ID or f"{datetime.date.today():%Y-%m-%d}_{PRESET}"
