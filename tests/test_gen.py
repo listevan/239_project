@@ -205,8 +205,10 @@ def test_audit_fixes_in_helpers():
 def test_end_token_ids():
     # special end-of-turn tokens must be stop ids: vLLM drops them from the text, so stop strings miss them
     tok = SimpleNamespace(get_vocab=lambda: {"<|endoftext|>": 151643, "<|im_end|>": 151645, "<|im_start|>": 151644,
-                                             "hello": 7})
-    assert gen.end_token_ids(tok) == [151643, 151645]
+                                             "</s>": 128247, "hello": 7},
+                          added_tokens_decoder={151643: SimpleNamespace(special=True), 151644: SimpleNamespace(special=True),
+                                                151645: SimpleNamespace(special=True)})
+    assert gen.end_token_ids(tok) == [151643, 151645]   # "</s>" is ordinary text in Qwen's vocabulary
 
 
 def test_settings_fingerprint_and_arm_done():

@@ -100,8 +100,12 @@ END_TOKENS = ("<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|end_of_text|>", "<
 
 
 def end_token_ids(tok):
+    """Ids of the END_TOKENS this tokenizer has as special tokens. A plain vocabulary entry with the same
+    text (Qwen's vocabulary has "</s>" as ordinary text) is not an end of turn and is left out."""
     vocab = tok.get_vocab()
-    return sorted({vocab[t] for t in END_TOKENS if t in vocab})
+    added = getattr(tok, "added_tokens_decoder", None) or {}
+    special = {i for i, t in added.items() if getattr(t, "special", True)} | set(getattr(tok, "all_special_ids", None) or ())
+    return sorted({vocab[t] for t in END_TOKENS if t in vocab and vocab[t] in special})
 CODE_RE = re.compile(r"```(?:python|py)[ \t]*\n(.*?)```", re.S)
 FENCED_RE = re.compile(r"```.*?```", re.S)
 
